@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#171916" />
+    <meta name="description" content="A simple place to keep the music you love." />
+    <title>Side B — Playlist Manager</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Playlist library">
+        <a class="brand" href="/" aria-label="Side B home">
+          <span class="brand-mark" aria-hidden="true">b.</span>
+          <span class="brand-copy">
+            <span class="brand-name">side b</span>
+            <span class="brand-note">your music shelf</span>
+          </span>
+        </a>
+
+        <div class="library-heading">
+          <span class="eyebrow">Your library</span>
+          <div class="sidebar-heading-actions">
+            <button class="icon-button add-playlist-button" id="new-playlist-button" type="button" aria-label="Create a playlist" title="Create a playlist">+</button>
+            <button class="icon-button sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Collapse sidebar" title="Collapse sidebar">‹</button>
+          </div>
+        </div>
+
+        <label class="search-box" for="playlist-search">
+          <svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="8.8" cy="8.8" r="5.7"></circle><path d="m13 13 4 4"></path></svg>
+          <input id="playlist-search" type="search" placeholder="Find a playlist" autocomplete="off" />
+        </label>
+
+        <button
+          id="home-button"
+          class="liked-songs-button home-button"
+          type="button"
+          data-library-view="home"
+        >
+          <span class="liked-songs-icon">⌂</span>
+          <span>Home</span>
+        </button>
+
+        <button
+          id="liked-songs-button"
+          class="liked-songs-button"
+          type="button"
+          data-library-view="liked"
+        >
+          <span class="liked-songs-icon">♡</span>
+          <span>Liked songs</span>
+        </button>
+
+        <nav id="playlist-list" class="playlist-list" aria-label="Your playlists">
+          <p class="sidebar-loading">Getting your playlists…</p>
+        </nav>
+
+        <div class="sidebar-footer">
+          <span class="status-light" aria-hidden="true"></span>
+          <span id="connection-label">Connecting to your library</span>
+        </div>
+      </aside>
+      <button class="sidebar-reopen" id="sidebar-reopen" type="button" aria-label="Open sidebar" title="Open sidebar">›</button>
+
+      <main class="main-area">
+        <header class="topbar">
+          <div class="crumbs"><span>COLLECTION</span><span class="crumb-slash">/</span><span>PLAYLISTS</span></div>
+          <a class="api-link" href="/docs" target="_blank" rel="noreferrer">API docs <span aria-hidden="true">↗</span></a>
+        </header>
+
+        <section id="playlist-view" class="playlist-view" aria-live="polite">
+          <div class="loading-view"><span class="loading-mark">b.</span><p>Setting the needle down…</p></div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="playlist-dialog" class="edit-dialog">
+      <form id="playlist-form" class="dialog-form">
+        <div class="dialog-topline">
+          <span class="eyebrow" id="playlist-dialog-kicker">A new collection</span>
+          <button class="dialog-close" type="button" data-close-dialog="playlist-dialog" aria-label="Close">×</button>
+        </div>
+        <h2 id="playlist-dialog-title">Make a playlist</h2>
+        <p class="dialog-intro">Give this little corner of your library a name.</p>
+        <label for="playlist-name">Name</label>
+        <input id="playlist-name" name="name" maxlength="120" required placeholder="Sunday morning" />
+        <label for="playlist-description">A note <span class="optional">(optional)</span></label>
+        <textarea id="playlist-description" name="description" rows="3" placeholder="What belongs in here?"></textarea>
+        <label for="playlist-cover-file">Album cover <span class="optional">(optional)</span></label>
+        <input id="playlist-cover-file" name="cover" type="file" accept=".jpg,.jpeg,.png,.webp,.gif,image/*" />
+        <p id="playlist-cover-help" class="file-help">Add your own artwork. It will appear across the library.</p>
+        <div class="dialog-actions">
+          <button class="button button-quiet" type="button" data-close-dialog="playlist-dialog">Cancel</button>
+          <button class="button button-accent" type="submit" id="playlist-submit">Create playlist</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="track-dialog" class="edit-dialog">
+      <form id="track-form" class="dialog-form">
+        <div class="dialog-topline">
+          <span class="eyebrow" id="track-dialog-kicker">Add to the side</span>
+          <button class="dialog-close" type="button" data-close-dialog="track-dialog" aria-label="Close">×</button>
+        </div>
+        <h2 id="track-dialog-title">Add a song</h2>
+        <p class="dialog-intro">The ones you keep coming back to.</p>
+        <label for="track-file">Audio file <span class="optional">(optional)</span></label>
+<input
+  id="track-file"
+  name="file"
+  type="file"
+  multiple
+  accept=".mp3,.wav,.ogg,.flac,.m4a,.aac,.webm,audio/*"
+/>
+<p class="file-help">Choose one song or select a whole group. Metadata and embedded artwork are imported automatically.</p>
+        <label for="track-cover-file">Song artwork <span class="optional">(optional)</span></label>
+        <input id="track-cover-file" name="cover" type="file" accept=".jpg,.jpeg,.png,.webp,.gif,image/*" />
+        <p id="track-cover-help" class="file-help">Embedded artwork is picked up automatically when the file has it.</p>
+        <label for="track-title">Song title</label>
+        <input id="track-title" name="title" maxlength="200" required placeholder="Dreams" />
+        <label for="track-artist">Artist</label>
+        <input id="track-artist" name="artist" maxlength="150" required placeholder="Fleetwood Mac" />
+        <label for="track-album">Album <span class="optional">(optional)</span></label>
+        <input id="track-album" name="album" maxlength="150" placeholder="Rumours" />
+        <label for="track-duration">Length <span class="optional">(seconds, optional)</span></label>
+        <input id="track-duration" name="duration_seconds" type="number" min="1" step="1" inputmode="numeric" placeholder="257" />
+        <div class="dialog-actions">
+          <button class="button button-quiet" type="button" data-close-dialog="track-dialog">Cancel</button>
+          <button class="button button-accent" type="submit" id="track-submit">Add song</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="mood-dialog" class="mood-dialog">
+      <div class="dialog-topline">
+        <span class="eyebrow">A pocket of your library</span>
+        <button class="dialog-close" type="button" data-close-dialog="mood-dialog" aria-label="Close">×</button>
+      </div>
+      <h2 id="mood-dialog-title">Mood</h2>
+      <p id="mood-dialog-caption" class="dialog-intro"></p>
+      <div id="mood-dialog-tracks" class="mood-dialog-tracks"></div>
+    </dialog>
+
+    <section id="player-bar" class="player-bar" hidden aria-label="Audio player">
+      <div class="player-song">
+        <div id="player-art" class="player-art">♪</div>
+        <div class="player-song-copy">
+          <strong id="player-title">No song selected</strong>
+          <span id="player-artist">Choose a song to start listening</span>
+        </div>
+      </div>
+
+      <div class="player-controls">
+        <button
+          id="player-shuffle"
+          class="player-button"
+          type="button"
+          aria-label="Shuffle off"
+          title="Shuffle"
+        >
+        ⤨
+        </button>
+        <button
+          id="player-play"
+          class="player-button player-main-button"
+          type="button"
+          aria-label="Play"
+          title="Play"
+        >
+          ▶
+        </button>
+
+        <span id="player-current-time" class="player-time">0:00</span>
+
+        <input
+          id="player-progress"
+          class="player-progress"
+          type="range"
+          min="0"
+          max="100"
+          value="0"
+          step="0.1"
+          aria-label="Song progress"
+        />
+
+        <span id="player-total-time" class="player-time">0:00</span>
+      </div>
+
+      <div class="player-options">
+        <button id="player-mute" class="player-button volume-button" type="button" aria-label="Mute" title="Mute (M)">🔊</button>
+        <input
+          id="player-volume"
+          class="player-volume"
+          type="range"
+          min="0"
+          max="1"
+          value="0.8"
+          step="0.05"
+          aria-label="Volume"
+        />
+        <span id="player-volume-value" class="volume-value">80%</span>
+        <button
+          id="player-repeat"
+          class="player-button"
+          type="button"
+          aria-label="Repeat off"
+          title="Repeat"
+        >
+          ↻
+        </button>
+
+        <button
+          id="player-close"
+          class="player-button"
+          type="button"
+          aria-label="Close player"
+          title="Close player"
+        >
+          ×
+        </button>
+      </div>
+
+      <audio id="audio-engine" preload="metadata"></audio>
+    </section>
+    <canvas id="now-playing-visualizer" class="now-playing-visualizer" aria-hidden="true"></canvas>
+    <section id="now-playing" class="now-playing" hidden aria-label="Now playing">
+      <div class="now-playing-backdrop" id="now-playing-backdrop"></div>
+
+      <div class="now-playing-topbar">
+        <span class="eyebrow">Now playing</span>
+
+        <button
+          id="now-playing-close"
+          class="now-playing-close"
+          type="button"
+          aria-label="Close now playing"
+        >
+          ×
+        </button>
+      </div>
+
+      <div class="now-playing-content">
+        <div
+          id="now-playing-art"
+          class="now-playing-art"
+          aria-label="Album artwork"
+        >
+          ♪
+        </div>
+
+        <div class="now-playing-info">
+          <span class="eyebrow">Listening from your library</span>
+          <h1 id="now-playing-title">No song selected</h1>
+          <p id="now-playing-artist">Choose a song to start listening</p>
+          <div class="now-playing-meta">
+            <span id="now-playing-album">Single</span>
+            <span id="now-playing-status">Ready</span>
+          </div>
+          <button
+            id="now-playing-like"
+            class="now-playing-like"
+            type="button"
+            aria-label="Like song"
+            title="Like song"
+          >♡ Like</button>
+          <div class="now-playing-progress">
+            <span id="now-playing-current">0:00</span>
+
+            <input
+              id="now-playing-progress"
+              type="range"
+              min="0"
+              max="100"
+              value="0"
+              step="0.1"
+              aria-label="Now playing progress"
+            />
+
+            <span id="now-playing-total">0:00</span>
+          </div>
+
+          <div class="now-playing-actions" aria-label="Playback options">
+            <button
+              id="now-playing-shuffle"
+              type="button"
+              aria-label="Shuffle off"
+              title="Shuffle"
+            >
+              ⤨
+            </button>
+
+            <button
+              id="now-playing-repeat"
+              type="button"
+              aria-label="Repeat off"
+              title="Repeat"
+            >
+              ↻
+            </button>
+          </div>
+
+          <div class="now-playing-controls">
+            <button
+              id="now-playing-previous"
+              type="button"
+              aria-label="Previous song"
+              title="Previous song"
+            >
+              ◀
+            </button>
+
+            <button
+              id="now-playing-toggle"
+              class="now-playing-main-control"
+              type="button"
+              aria-label="Play"
+              title="Play"
+            >
+              ▶
+            </button>
+
+            <button
+              id="now-playing-next"
+              type="button"
+              aria-label="Next song"
+              title="Next song"
+            >
+              ▶
+            </button>
+          </div>
+
+          <div class="now-playing-volume">
+            <button
+              id="now-playing-mute"
+              type="button"
+              aria-label="Mute"
+              title="Mute"
+            >
+              🔊
+            </button>
+
+            <input
+              id="now-playing-volume"
+              type="range"
+              min="0"
+              max="1"
+              value="0.8"
+              step="0.05"
+              aria-label="Now playing volume"
+            />
+
+            <span id="now-playing-volume-value">80%</span>
+          </div>
+
+          <section class="playback-queue" aria-labelledby="queue-title">
+            <div class="queue-heading">
+              <h2 id="queue-title">Up next</h2>
+              <div class="queue-actions"><button class="queue-clear" type="button" data-action="remove-selected-queue">Remove selected</button><button class="queue-clear" type="button" data-action="clear-queue">Clear</button></div>
+            </div>
+            <ol id="playback-queue" class="queue-list"></ol>
+          </section>
+        </div>
+
+        <button id="lyrics-toggle" class="lyrics-tab" type="button" aria-expanded="false" aria-controls="lyrics-panel">♫ <span>Lyrics</span></button>
+        <section id="lyrics-panel" class="lyrics-panel" aria-labelledby="lyrics-title" hidden>
+          <div class="lyrics-heading">
+            <div>
+              <span class="eyebrow">Words for the moment</span>
+              <h2 id="lyrics-title">Lyrics</h2>
+            </div>
+            <div class="lyrics-heading-actions">
+              <button id="lyrics-fetch" class="lyrics-edit" type="button">Find lyrics</button>
+              <button id="lyrics-edit" class="lyrics-edit" type="button">Edit</button>
+            </div>
+          </div>
+          <div id="lyrics-view" class="lyrics-view">
+            <p class="lyrics-empty">No lyrics added yet.</p>
+          </div>
+          <div id="lyrics-editor" class="lyrics-editor" hidden>
+            <textarea id="lyrics-input" maxlength="12000" placeholder="Paste or write the lyrics here…"></textarea>
+            <div class="lyrics-editor-actions">
+              <button id="lyrics-cancel" class="button button-quiet" type="button">Cancel</button>
+              <button id="lyrics-save" class="button button-accent" type="button">Save lyrics</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
