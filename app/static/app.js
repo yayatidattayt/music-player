@@ -7,6 +7,8 @@ const state = {
   activeId: null,
   activePlaylist: null,
   trackQuery: "",
+  trackSort: "custom",
+  selectedTrackIds: new Set(),
   editingPlaylistId: null,
   editingTrackId: null,
   detailRequest: 0,
@@ -14,6 +16,7 @@ const state = {
   queue: JSON.parse(localStorage.getItem("ydkmusic-queue") || "[]"),
   draggingQueueIndex: null,
   homePlaylists: [],
+  stats: null,
   listenProgress: 0,
   lastPlaybackTime: null,
   countedListenTrackId: null,
@@ -271,6 +274,69 @@ function showToast(message, isError = false) {
   state.toastTimer = setTimeout(() => toast.classList.remove("is-visible"), 2800);
 }
 
+function renderSongLabResult(result) {
+  const resultBox = byId("song-lab-result");
+  const value = (item, fallback = "Not available") => item === null || item === undefined || item === "" ? fallback : escapeHtml(item);
+  resultBox.hidden = false;
+  resultBox.innerHTML = `
+    <div class="song-lab-result-heading">
+      <div>
+        <span class="eyebrow">${escapeHtml(result.source || "Local audio")}</span>
+        <h3>${value(result.title, "Untitled song")}</h3>
+        <p>${value(result.artist, "Unknown artist")}${result.album ? ` · ${escapeHtml(result.album)}` : ""}</p>
+      </div>
+      ${result.cover_url ? `<img src="${escapeHtml(result.cover_url)}" alt="" />` : ""}
+    </div>
+    <div class="song-lab-metrics">
+      <div><strong>${value(result.bpm, "—")}</strong><span>BPM</span></div>
+      <div><strong>${value(result.key, "—")}</strong><span>Key</span></div>
+      <div><strong>${formatDuration(result.duration_seconds)}</strong><span>Length</span></div>
+      <div><strong>${value(result.genre, "—")}</strong><span>Genre</span></div>
+    </div>
+    <p class="song-lab-note">${escapeHtml(result.note || "Analysis complete.")}</p>
+    ${result.preview_url ? `<a class="song-lab-preview" href="${escapeHtml(result.preview_url)}" target="_blank" rel="noreferrer">Open preview ↗</a>` : ""}
+    ${result.source_url ? `<a class="song-lab-preview" href="${escapeHtml(result.source_url)}" target="_blank" rel="noreferrer">View source ↗</a>` : ""}`;
+}
+
+async function analyzeSongFromLab() {
+  const query = byId("song-lab-query").value.trim();
+  const file = byId("song-lab-file").files[0];
+  const submit = byId("song-lab-submit");
+  const resultBox = byId("song-lab-result");
+  if (!query) return;
+  submit.disabled = true;
+  submit.textContent = "Reading…";
+  resultBox.hidden = false;
+  resultBox.innerHTML = '<p class="song-lab-loading">Listening for the details…</p>';
+  try {
+    let result;
+    if (file) {
+      const form = new FormData();
+      form.append("file", file);
+      const metadata = await api("/api/tracks/metadata", { method: "POST", body: form });
+      result = {
+        ...metadata,
+        title: metadata.title || query,
+        artist: metadata.artist || "Unknown artist",
+        source: "Local audio file",
+        bpm: metadata.bpm || null,
+        key: metadata.key || null,
+        note: metadata.bpm || metadata.key
+          ? "BPM/key read or estimated from the local audio file."
+          : "File metadata was read locally. No BPM or musical-key data was available.",
+      };
+    } else {
+      result = await api(`/api/song-analysis?song=${encodeURIComponent(query)}`);
+    }
+    renderSongLabResult(result);
+  } catch (error) {
+    resultBox.innerHTML = `<p class="song-lab-error">${escapeHtml(error.message || "Song analysis failed.")}</p>`;
+  } finally {
+    submit.disabled = false;
+    submit.textContent = "Analyze song";
+  }
+}
+
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   if (
@@ -368,8 +434,20 @@ function renderLyrics() {
   if (!view || !playerTrack) return;
   const lyrics = String(playerTrack.lyrics || "").trim();
   view.innerHTML = lyrics
-    ? lyrics.split(/\r?\n/).map((line) => `<p>${escapeHtml(line) || "&nbsp;"}</p>`).join("")
+    ? lyrics.split(/\r?\n/).map((line) => {
+      const match = line.match(/^\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)$/);
+      return `<p${match ? ` data-lyric-time="${Number(match[1]) * 60 + Number(match[2])}"` : ""}>${escapeHtml(match ? match[3] : line) || "&nbsp;"}</p>`;
+    }).join("")
     : '<p class="lyrics-empty">No lyrics added yet.<br><span>Use Edit to add them for this song.</span></p>';
+}
+
+function syncLyrics() {
+  const lines = [...document.querySelectorAll("#lyrics-view p[data-lyric-time]")];
+  if (!lines.length || !playerTrack) return;
+  let current = lines[0];
+  lines.forEach((line) => { if (Number(line.dataset.lyricTime) <= audioEngine.currentTime) current = line; });
+  lines.forEach((line) => line.classList.toggle("is-current", line === current));
+  current.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 function renderQueue() {
@@ -381,9 +459,19 @@ function renderQueue() {
           <input class="queue-select" type="checkbox" data-queue-select="${index}" aria-label="Select ${escapeHtml(track.title)}">
           <span class="queue-index">${index + 1}</span>
           <span class="queue-copy"><strong>${escapeHtml(track.title)}</strong><small>${escapeHtml(track.artist || "Unknown artist")}</small></span>
-          <button class="queue-remove" type="button" data-action="remove-queue" data-queue-index="${index}" aria-label="Remove ${escapeHtml(track.title)} from queue">×</button>
+          <span class="queue-item-actions"><button class="queue-save" type="button" data-action="save-queue-track" data-queue-index="${index}" aria-label="Save ${escapeHtml(track.title)} to a playlist" title="Save to playlist">＋</button><button class="queue-remove" type="button" data-action="remove-queue" data-queue-index="${index}" aria-label="Remove ${escapeHtml(track.title)} from queue">×</button></span>
         </li>`).join("")
     : '<li class="queue-empty">Your queue is empty. Add songs from a playlist.</li>';
+}
+
+function openQueueSaveDialog(index) {
+  const track = state.queue[index];
+  if (!track) return;
+  byId("queue-save-caption").textContent = `Choose where to save “${track.title}”.`;
+  byId("queue-save-playlists").innerHTML = state.playlists.length
+    ? state.playlists.map((playlist) => `<button class="queue-save-playlist" type="button" data-action="save-queue-to-playlist" data-queue-index="${index}" data-playlist-id="${playlist.id}"><span>${escapeHtml(playlist.name)}</span><small>${playlist.track_count ?? ""} songs</small></button>`).join("")
+    : '<p class="queue-empty">Create a playlist first.</p>';
+  byId("queue-save-dialog").showModal();
 }
 
 function addToQueue(track, playNext = false) {
@@ -393,6 +481,20 @@ function addToQueue(track, playNext = false) {
   localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
   renderQueue();
   showToast(playNext ? "Added to play next." : "Added to queue.");
+}
+
+function buildSmartQueue() {
+  if (!playerTrack) return showToast("Start a song first to build a smart queue.", true);
+  const library = state.homePlaylists.flatMap((playlist) => playlist.tracks || []);
+  const candidates = library.filter((track) => track.audio_url && track.id !== playerTrack.id && !state.queue.some((queued) => queued.id === track.id));
+  const ranked = candidates.sort((a, b) => {
+    const score = (track) => (track.artist === playerTrack.artist ? 5 : 0) + (track.genre && track.genre === playerTrack.genre ? 4 : 0) + (trackMood(track) === trackMood(playerTrack) ? 3 : 0) + (track.play_count || 0) * .01;
+    return score(b) - score(a);
+  });
+  state.queue.push(...ranked.slice(0, 8));
+  localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
+  renderQueue();
+  showToast("Smart flow added to your queue.");
 }
 
 function closeNowPlaying() {
@@ -714,9 +816,16 @@ function renderError(message) {
 function filteredTracks() {
   const tracks = state.activePlaylist?.tracks || [];
   const term = state.trackQuery.trim().toLocaleLowerCase();
-  if (!term) return tracks;
-  return tracks.filter((track) => [track.title, track.artist, track.album]
-    .some((part) => String(part || "").toLocaleLowerCase().includes(term)));
+  const filtered = term
+    ? tracks.filter((track) => [track.title, track.artist, track.album]
+      .some((part) => String(part || "").toLocaleLowerCase().includes(term)))
+    : tracks;
+  return [...filtered].sort((a, b) => {
+    if (state.trackSort === "title") return a.title.localeCompare(b.title);
+    if (state.trackSort === "artist") return a.artist.localeCompare(b.artist) || a.title.localeCompare(b.title);
+    if (state.trackSort === "plays") return (b.play_count || 0) - (a.play_count || 0);
+    return (a.position || 0) - (b.position || 0);
+  });
 }
 
 function trackMood(track) {
@@ -757,14 +866,14 @@ function lyricOfTheDay(tracks) {
 function renderHome() {
   const playlists = state.homePlaylists;
   const allTracks = playlists.flatMap((playlist) => playlist.tracks || []);
-  const totalListens = allTracks.reduce((sum, track) => sum + (track.play_count || 0), 0);
+  const totalListens = state.stats?.total_listens ?? allTracks.reduce((sum, track) => sum + (track.play_count || 0), 0);
   const topTracks = [...allTracks].sort((a, b) => (b.play_count || 0) - (a.play_count || 0)).slice(0, 5);
   const moodTracks = [...allTracks].sort((a, b) => (b.play_count || 0) - (a.play_count || 0));
   const lyric = lyricOfTheDay(allTracks);
 
   playlistView.innerHTML = `
     <section class="home-hero"><span class="eyebrow">Your listening room</span><h1>Good music,<br><em>kept close.</em></h1><p>Everything you have made, saved, and returned to.</p></section>
-    <section class="home-stats"><article><strong>${playlists.length}</strong><span>playlists</span></article><article><strong>${allTracks.length}</strong><span>songs</span></article><article><strong>${totalListens}</strong><span>listens</span></article></section>
+    <section class="home-stats"><article><strong>${playlists.length}</strong><span>playlists</span></article><article><strong>${allTracks.length}</strong><span>songs</span></article><article><strong>${totalListens}</strong><span>listens</span></article><article><strong>${state.stats?.total_minutes || 0}</strong><span>minutes heard</span></article></section>
     <section class="home-section"><div class="home-section-heading"><div><span class="eyebrow">Your collections</span><h2>Playlists</h2></div></div><div class="home-playlist-grid">
       ${playlists.map((playlist, index) => `<button class="home-playlist-card" type="button" data-playlist-id="${playlist.id}"><span class="home-playlist-art cover-${index % 4}"${coverStyle(playlist.cover_url)}></span><strong>${escapeHtml(playlist.name)}</strong><small>${playlist.tracks.length} songs · ${playlist.tracks.reduce((sum, track) => sum + (track.play_count || 0), 0)} listens</small></button>`).join("") || '<p class="home-empty">Create your first playlist to give your library a home.</p>'}
     </div></section>
@@ -778,6 +887,7 @@ async function loadHome() {
   state.currentView = "home";
   try {
     state.homePlaylists = await Promise.all(state.playlists.map((playlist) => api(`/api/playlists/${playlist.id}`)));
+    state.stats = await api("/api/listening/stats");
     const missingGenreTracks = state.homePlaylists.flatMap((playlist) => playlist.tracks || []).filter((track) => !track.genre);
     if (missingGenreTracks.length) {
       await Promise.all(missingGenreTracks.map((track) => api(`/api/tracks/${track.id}/catalog-metadata`, { method: "POST" }).catch(() => null)));
@@ -804,12 +914,12 @@ function renderTrackRows() {
 
   return tracks.map((track, index) => `
     <article
-      class="track-row ${playerTrack?.id === track.id ? "is-playing" : ""}"
+      class="track-row ${playerTrack?.id === track.id ? "is-playing" : ""} ${state.selectedTrackIds.has(track.id) ? "is-selected" : ""}"
       data-track-id="${track.id}"
       data-drag-scope="playlist"
       draggable="true"
     >
-      <span class="track-number">${String(index + 1).padStart(2, "0")}</span>
+      <span class="track-number"><input class="track-select" type="checkbox" data-track-select="${track.id}" ${state.selectedTrackIds.has(track.id) ? "checked" : ""} aria-label="Select ${escapeHtml(track.title)}" />${String(index + 1).padStart(2, "0")}</span>
       <div class="track-main">
         ${
           track.audio_url
@@ -890,6 +1000,7 @@ function renderPlaylist() {
   if (!playlist) return renderEmptyLibrary();
 
   const tracks = playlist.tracks || [];
+  state.selectedTrackIds = new Set([...state.selectedTrackIds].filter((id) => tracks.some((track) => track.id === id)));
   const totalSeconds = tracks.reduce((total, track) => total + (Number(track.duration_seconds) || 0), 0);
   const art = (playlist.id - 1) % 4;
   const description = playlist.description
@@ -914,15 +1025,19 @@ function renderPlaylist() {
     <section class="songs-section" aria-labelledby="songs-heading">
       <div class="songs-heading">
         <div><h2 class="section-title" id="songs-heading">The songs</h2><p class="section-caption">In the order you put them here.</p></div>
+        <div class="songs-tools"><button class="button button-quiet bulk-remove-button" type="button" data-action="remove-selected-tracks" ${state.selectedTrackIds.size ? "" : "disabled"}>Remove ${state.selectedTrackIds.size || "selected"}</button><select class="track-sort" id="track-sort" aria-label="Sort songs"><option value="custom">Custom order</option><option value="title">Title</option><option value="artist">Artist</option><option value="plays">Most played</option></select>
         <input class="track-filter" id="track-search" type="search" placeholder="Filter songs" aria-label="Filter songs in this playlist" autocomplete="off" />
+        </div>
       </div>
       <div class="track-table">
-        <div class="track-labels" aria-hidden="true"><span>#</span><span>Title</span><span class="label-album">Album</span><span>Time</span><span></span></div>
+        <div class="track-labels" aria-hidden="true"><span><input class="track-select" type="checkbox" data-action="select-visible-tracks" ${filteredTracks().length && filteredTracks().every((track) => state.selectedTrackIds.has(track.id)) ? "checked" : ""} aria-label="Select all visible songs" /> #</span><span>Title</span><span class="label-album">Album</span><span>Time</span><span></span></div>
         <div id="track-rows">${renderTrackRows()}</div>
       </div>
     </section>`;
 
   byId("track-search").value = state.trackQuery;
+  byId("track-sort").value = state.trackSort;
+  byId("track-sort").addEventListener("change", (event) => { state.trackSort = event.target.value; renderPlaylist(); });
   byId("track-search").addEventListener("input", (event) => {
     state.trackQuery = event.target.value;
     const rows = byId("track-rows");
@@ -1098,18 +1213,56 @@ document.addEventListener("click", async (event) => {
     localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
     renderQueue();
   }
+  if (action === "save-queue-track") openQueueSaveDialog(Number(actionButton.dataset.queueIndex));
+  if (action === "save-queue-to-playlist") {
+    const track = state.queue[Number(actionButton.dataset.queueIndex)];
+    const playlistId = Number(actionButton.dataset.playlistId);
+    if (!track || !playlistId) return;
+    try {
+      await api(`/api/playlists/${playlistId}/tracks/from-queue/${track.id}`, { method: "POST" });
+      byId("queue-save-dialog").close();
+      showToast(`Saved “${track.title}” to your playlist.`);
+      if (state.activeId === playlistId) await loadPlaylist(playlistId);
+      else await loadPlaylists(state.activeId);
+    } catch (error) {
+      showToast(error.message.includes("already") ? "That song is already in this playlist." : error.message, true);
+    }
+  }
   if (action === "clear-queue") {
     state.queue = [];
     localStorage.removeItem("ydkmusic-queue");
     renderQueue();
     showToast("Queue cleared.");
   }
+  if (action === "smart-queue") buildSmartQueue();
   if (action === "remove-selected-queue") {
     const selected = new Set([...document.querySelectorAll("[data-queue-select]:checked")].map((input) => Number(input.dataset.queueSelect)));
     state.queue = state.queue.filter((_, index) => !selected.has(index));
     localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
     renderQueue();
     showToast(selected.size ? `${selected.size} songs removed from queue.` : "Select songs to remove first.");
+  }
+  if (action === "select-visible-tracks") {
+    const visible = filteredTracks();
+    const shouldSelect = visible.length > 0 && !visible.every((track) => state.selectedTrackIds.has(track.id));
+    visible.forEach((track) => shouldSelect ? state.selectedTrackIds.add(track.id) : state.selectedTrackIds.delete(track.id));
+    renderPlaylist();
+  }
+  if (action === "remove-selected-tracks") {
+    const selected = [...state.selectedTrackIds];
+    if (!selected.length) return;
+    if (!window.confirm(`Remove ${selected.length} ${selected.length === 1 ? "song" : "songs"} from this playlist?`)) return;
+    try {
+      await api(`/api/playlists/${state.activeId}/tracks/bulk-delete`, {
+        method: "DELETE",
+        body: JSON.stringify(selected),
+      });
+      state.selectedTrackIds.clear();
+      showToast(`${selected.length} ${selected.length === 1 ? "song" : "songs"} removed.`);
+      await loadPlaylists(state.activeId);
+    } catch (error) {
+      showToast(error.message, true);
+    }
   }
     if (action === "play-liked-track") {
     const track = state.likedTracks.find(
@@ -1190,7 +1343,26 @@ document.addEventListener("click", async (event) => {
   }
 });
 
+document.addEventListener("change", (event) => {
+  const checkbox = event.target.closest("[data-track-select]");
+  if (!checkbox) return;
+  const trackId = Number(checkbox.dataset.trackSelect);
+  if (checkbox.checked) state.selectedTrackIds.add(trackId);
+  else state.selectedTrackIds.delete(trackId);
+  renderPlaylist();
+});
+
 byId("new-playlist-button").addEventListener("click", () => openPlaylistDialog());
+
+byId("song-lab-button").addEventListener("click", () => {
+  byId("song-lab-result").hidden = true;
+  byId("song-lab-dialog").showModal();
+  byId("song-lab-query").focus();
+});
+byId("song-lab-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await analyzeSongFromLab();
+});
 
 let searchTimer;
 playlistSearch.addEventListener("input", () => {
@@ -1459,6 +1631,7 @@ audioEngine.addEventListener("timeupdate", () => {
     }
   }
   updatePlayerDisplay();
+  syncLyrics();
 });
 
 audioEngine.addEventListener("loadedmetadata", () => {

@@ -53,6 +53,12 @@
           <span>Liked songs</span>
         </button>
 
+        <button id="song-lab-button" class="sidebar-tool-button" type="button">
+          <span class="liked-songs-icon">✦</span>
+          <span>Song Lab</span>
+          <small>tempo · key · details</small>
+        </button>
+
         <nav id="playlist-list" class="playlist-list" aria-label="Your playlists">
           <p class="sidebar-loading">Getting your playlists…</p>
         </nav>
@@ -94,6 +100,27 @@
         <div class="dialog-actions">
           <button class="button button-quiet" type="button" data-close-dialog="playlist-dialog">Cancel</button>
           <button class="button button-accent" type="submit" id="playlist-submit">Create playlist</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="song-lab-dialog" class="edit-dialog song-lab-dialog">
+      <form id="song-lab-form" class="dialog-form">
+        <div class="dialog-topline">
+          <span class="eyebrow">Song Lab</span>
+          <button class="dialog-close" type="button" data-close-dialog="song-lab-dialog" aria-label="Close">×</button>
+        </div>
+        <h2>Read the song</h2>
+        <p class="dialog-intro">Attach a local file for a quick read, or search the public catalog for a match.</p>
+        <label for="song-lab-query">Song name</label>
+        <input id="song-lab-query" name="song" maxlength="160" required placeholder="Song title — artist" />
+        <label for="song-lab-file">Audio file <span class="optional">(optional)</span></label>
+        <input id="song-lab-file" name="file" type="file" accept=".mp3,.wav,.ogg,.flac,.m4a,.aac,.webm,audio/*" />
+        <p class="file-help">Local files stay on this device while metadata is read. Without a file, Song Lab searches online catalogs.</p>
+        <div id="song-lab-result" class="song-lab-result" hidden></div>
+        <div class="dialog-actions">
+          <button class="button button-quiet" type="button" data-close-dialog="song-lab-dialog">Close</button>
+          <button class="button button-accent" type="submit" id="song-lab-submit">Analyze song</button>
         </div>
       </form>
     </dialog>
@@ -141,6 +168,16 @@
       <h2 id="mood-dialog-title">Mood</h2>
       <p id="mood-dialog-caption" class="dialog-intro"></p>
       <div id="mood-dialog-tracks" class="mood-dialog-tracks"></div>
+    </dialog>
+
+    <dialog id="queue-save-dialog" class="mood-dialog">
+      <div class="dialog-topline">
+        <span class="eyebrow">Keep it close</span>
+        <button class="dialog-close" type="button" data-close-dialog="queue-save-dialog" aria-label="Close">×</button>
+      </div>
+      <h2>Save to a playlist</h2>
+      <p id="queue-save-caption" class="dialog-intro"></p>
+      <div id="queue-save-playlists" class="queue-save-playlists"></div>
     </dialog>
 
     <section id="player-bar" class="player-bar" hidden aria-label="Audio player">
@@ -357,7 +394,7 @@
           <section class="playback-queue" aria-labelledby="queue-title">
             <div class="queue-heading">
               <h2 id="queue-title">Up next</h2>
-              <div class="queue-actions"><button class="queue-clear" type="button" data-action="remove-selected-queue">Remove selected</button><button class="queue-clear" type="button" data-action="clear-queue">Clear</button></div>
+              <div class="queue-actions"><button class="queue-clear" type="button" data-action="smart-queue">Smart flow</button><button class="queue-clear" type="button" data-action="remove-selected-queue">Remove selected</button><button class="queue-clear" type="button" data-action="clear-queue">Clear</button></div>
             </div>
             <ol id="playback-queue" class="queue-list"></ol>
           </section>

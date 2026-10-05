@@ -79,3 +79,11 @@ class Track(Base):
         return f"/covers/{filename}"
 
     playlist: Mapped[Playlist] = relationship(back_populates="tracks")
+
+
+class ListeningEvent(Base):
+    __tablename__ = "listening_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), nullable=False, index=True)
+    listened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)

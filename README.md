@@ -64,3 +64,21 @@ Add a track to playlist `1`:
 ```
 
 Playlist and track IDs are returned by the API. Use those IDs in the paths for later edits and deletes.
+
+## Music analysis
+
+Song analysis uses music metadata services for tempo, musical key, artwork, and
+related track details. [Music analysis data by GetSongBPM](https://getsongbpm.com)
+is used as an online reference for BPM and key information.
+
+## Song Lab providers
+
+Song Lab uses online catalog/web sources when available. For authoritative BPM
+and key results, set `GETSONGBPM_API_KEY` before starting the server. When a
+local audio file is attached, embedded tags are read and librosa estimates BPM
+and key when the optional audio packages are installed.
+
+```powershell
+$env:GETSONGBPM_API_KEY = "your-api-key"
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+```

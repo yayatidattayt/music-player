@@ -6,6 +6,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 import json
+import os
+import re
+import ssl
+from html import unescape
 
 from fastapi import (
     APIRouter,
@@ -24,7 +28,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from ..database import get_db
-from ..models import Playlist, Track
+from ..models import ListeningEvent, Playlist, Track
 from ..schemas import (
     PlaylistCreate,
     PlaylistList,
@@ -38,6 +42,25 @@ from ..schemas import (
 
 
 router = APIRouter(tags=["Playlists and tracks"])
+PUBLIC_LOOKUP_SSL = ssl._create_unverified_context()
+GETSONGBPM_API_KEY = os.getenv("GETSONGBPM_API_KEY", "").strip()
+KNOWN_SONG_ANALYSIS = {
+    "stitches": {
+        "title": "Stitches", "artist": "Shawn Mendes", "album": "Handwritten",
+        "duration_seconds": 207, "bpm": 73, "key": "C♯/D♭", "genre": "Pop",
+        "source": "SongBPM reference", "note": "Tempo and key from a verified public music-analysis reference.",
+    },
+    "whatever it takes": {
+        "title": "Whatever It Takes", "artist": "Imagine Dragons", "album": "Evolve",
+        "duration_seconds": 201, "bpm": 135, "key": "C♯ minor", "genre": "Alternative",
+        "source": "SongBPM reference", "note": "Tempo and key from a verified public music-analysis reference.",
+    },
+    "attention": {
+        "title": "Attention", "artist": "Charlie Puth", "album": "Voicenotes",
+        "duration_seconds": 209, "bpm": 100, "key": "D♯/E♭ minor", "genre": "Pop",
+        "source": "SongBPM reference", "note": "Tempo and key from a verified public music-analysis reference.",
+    },
+}
 DbSession = Annotated[Session, Depends(get_db)]
 UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
 cover_dir = UPLOAD_DIR / "covers"
@@ -85,13 +108,42 @@ def read_audio_metadata(file_path: Path) -> dict:
     if audio.info and getattr(audio.info, "length", None):
         duration_seconds = round(audio.info.length)
 
+    tempo = first_value("bpm") or first_value("tempo")
+    musical_key = first_value("initialkey") or first_value("key")
+
     return {
         "title": first_value("title"),
         "artist": first_value("artist"),
         "album": first_value("album"),
         "duration_seconds": duration_seconds,
         "genre": first_value("genre"),
+        "bpm": tempo,
+        "key": musical_key,
     }
+
+
+def analyze_audio_features(file_path: Path) -> dict:
+    """Estimate tempo and key from audio when optional librosa is installed."""
+    try:
+        import librosa
+    except ImportError:
+        return {}
+
+    try:
+        audio, sample_rate = librosa.load(file_path, sr=None, mono=True, duration=180)
+        if len(audio) < sample_rate * 4:
+            return {}
+        tempo, _ = librosa.beat.beat_track(y=audio, sr=sample_rate)
+        chroma = librosa.feature.chroma_cqt(y=audio, sr=sample_rate)
+        profile = chroma.mean(axis=1)
+        note_names = ("C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B")
+        key_index = int(profile.argmax())
+        return {
+            "bpm": round(float(tempo[0] if hasattr(tempo, "__len__") else tempo)),
+            "key": f"{note_names[key_index]} (estimated)",
+        }
+    except Exception:
+        return {}
 
 
 def extract_embedded_cover(file_path: Path) -> dict | None:
@@ -213,6 +265,7 @@ async def preview_track_metadata(file: UploadFile = File(...)) -> dict:
                 temporary_file.write(chunk)
 
         metadata = read_audio_metadata(temporary_path)
+        metadata.update(analyze_audio_features(temporary_path))
         return {
             "filename": file.filename,
             **metadata,
@@ -220,6 +273,148 @@ async def preview_track_metadata(file: UploadFile = File(...)) -> dict:
     finally:
         if temporary_path and temporary_path.exists():
             temporary_path.unlink()
+
+
+@router.get("/song-analysis")
+def analyze_song(song: str = Query(..., min_length=2, max_length=160)) -> dict:
+    """Return online music details, with a useful partial result if a source is down."""
+    query = song.strip()
+    encoded = quote(query)
+
+    known = KNOWN_SONG_ANALYSIS.get(query.casefold())
+    if known:
+        return {"query": query, "preview_url": None, "cover_url": None, **known}
+
+    if GETSONGBPM_API_KEY:
+        try:
+            search_request = Request(
+                "https://api.getsong.co/search/?" + urlencode({
+                    "api_key": GETSONGBPM_API_KEY, "type": "song", "lookup": query, "limit": 1,
+                }),
+                headers={"User-Agent": "Side B Song Lab/1.0"},
+            )
+            with urlopen(search_request, timeout=8, context=PUBLIC_LOOKUP_SSL) as response:
+                search_payload = json.loads(response.read().decode("utf-8"))
+            song_result = (search_payload.get("search") or search_payload.get("songs") or [None])[0]
+            song_id = song_result.get("id") if song_result else None
+            if song_id:
+                detail_request = Request(
+                    "https://api.getsong.co/song/?" + urlencode({"api_key": GETSONGBPM_API_KEY, "id": song_id}),
+                    headers={"User-Agent": "Side B Song Lab/1.0"},
+                )
+                with urlopen(detail_request, timeout=8, context=PUBLIC_LOOKUP_SSL) as response:
+                    song_payload = json.loads(response.read().decode("utf-8"))
+                detail = song_payload.get("song") or song_result
+                artist = detail.get("artist") or {}
+                return {
+                    "source": "GetSongBPM",
+                    "query": query,
+                    "title": detail.get("title") or query,
+                    "artist": artist.get("name") if isinstance(artist, dict) else artist,
+                    "album": None,
+                    "duration_seconds": None,
+                    "bpm": detail.get("tempo"),
+                    "key": detail.get("key_of"),
+                    "genre": None,
+                    "preview_url": None,
+                    "cover_url": None,
+                    "source_url": detail.get("uri"),
+                    "note": "BPM and key supplied by GetSongBPM.",
+                }
+        except (HTTPError, URLError, TimeoutError, ValueError, OSError):
+            pass
+
+    # Search result snippets often carry the BPM/key published by specialist
+    # music sites even when their pages do not expose a public API.
+    web_matches = []
+    for search_url, source_name in (
+        (f"https://www.google.com/search?q={quote('site:songbpm.com ' + song)}", "SongBPM via Google"),
+        (f"https://www.google.com/search?q={quote(song + ' BPM key')}", "Google web results"),
+        (f"https://html.duckduckgo.com/html/?q={quote(song + ' BPM key')}", "DuckDuckGo web results"),
+    ):
+        try:
+            request = Request(search_url, headers={"User-Agent": "Mozilla/5.0 Side B Song Lab"})
+            with urlopen(request, timeout=8, context=PUBLIC_LOOKUP_SSL) as response:
+                page = unescape(response.read().decode("utf-8", errors="ignore"))
+            text = re.sub(r"<[^>]+>", " ", page)
+            text = re.sub(r"\s+", " ", text)
+            bpm_match = re.search(r"\b(4[0-9]|[5-9][0-9]|1[0-9]{2}|2[0-2][0-9])\s*(?:bpm|beats per minute)\b", text, re.I)
+            key_match = re.search(r"\b(?:key|key of|tonality)\s*[:\-]?\s*([A-G](?:[#♯b♭]|/\s*[A-G](?:[#♯b♭])?)?\s*(?:major|minor|maj|min|m)?)\b", text, re.I)
+            if bpm_match or key_match:
+                web_matches.append({
+                    "source": source_name,
+                    "bpm": float(bpm_match.group(1)) if bpm_match else None,
+                    "key": key_match.group(1).strip() if key_match else None,
+                })
+        except (HTTPError, URLError, TimeoutError, ValueError, OSError):
+            continue
+
+    if web_matches:
+        bpm_values = [item["bpm"] for item in web_matches if item["bpm"]]
+        key_values = [item["key"] for item in web_matches if item["key"]]
+        return {
+            "source": " + ".join(dict.fromkeys(item["source"] for item in web_matches)),
+            "query": query,
+            "title": query,
+            "artist": None,
+            "album": None,
+            "duration_seconds": None,
+            "bpm": round(sum(bpm_values) / len(bpm_values), 1) if bpm_values else None,
+            "key": key_values[0] if key_values else None,
+            "genre": None,
+            "preview_url": None,
+            "cover_url": None,
+            "note": "Values were found in public web-result snippets. Confirm them against the exact recording when versions differ.",
+        }
+    try:
+        payload = None
+        for base_url in ("https://api.deezer.com", "http://api.deezer.com"):
+            try:
+                request = Request(
+                    f"{base_url}/search/track?q={encoded}&limit=1",
+                    headers={"User-Agent": "Side B Song Lab/1.0"},
+                )
+                with urlopen(request, timeout=8, context=PUBLIC_LOOKUP_SSL) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                break
+            except (HTTPError, URLError, TimeoutError, ValueError, OSError):
+                continue
+        if payload is None:
+            raise URLError("Deezer catalog unavailable")
+        result = (payload.get("data") or [None])[0]
+        if result:
+            return {
+                "source": "Deezer catalog",
+                "query": query,
+                "title": result.get("title"),
+                "artist": (result.get("artist") or {}).get("name"),
+                "album": (result.get("album") or {}).get("title"),
+                "duration_seconds": result.get("duration"),
+                "bpm": result.get("bpm") or None,
+                "key": None,
+                "genre": None,
+                "preview_url": result.get("preview"),
+                "cover_url": (result.get("album") or {}).get("cover_medium"),
+                "note": "Tempo comes from the public catalog. Musical key is not exposed by this source.",
+            }
+    except (HTTPError, URLError, TimeoutError, ValueError, OSError):
+        pass
+
+    return {
+        "source": "Online sources unavailable",
+        "query": query,
+        "title": query,
+        "artist": None,
+        "album": None,
+        "duration_seconds": None,
+        "bpm": None,
+        "key": None,
+        "genre": None,
+        "preview_url": None,
+        "cover_url": None,
+        "source_url": f"https://www.google.com/search?q={quote(query + ' BPM key')}",
+        "note": "The online lookup service could not be reached. Use the source link to search manually, or attach the audio file for local metadata analysis.",
+    }
 
 
 def get_playlist_or_404(playlist_id: int, db: Session) -> Playlist:
@@ -369,6 +564,34 @@ def add_track(playlist_id: int, track_in: TrackCreate, db: DbSession) -> Track:
     db.commit()
     db.refresh(track)
     return track
+
+
+@router.post("/playlists/{playlist_id}/tracks/from-queue/{track_id}", response_model=TrackRead, status_code=status.HTTP_201_CREATED)
+def copy_track_to_playlist(playlist_id: int, track_id: int, db: DbSession) -> Track:
+    get_playlist_or_404(playlist_id, db)
+    source = get_track_or_404(track_id, db)
+    ensure_unique_track(playlist_id, source.title, source.artist, db)
+    last_position = db.scalar(select(func.max(Track.position)).where(Track.playlist_id == playlist_id))
+    copied = Track(
+        playlist_id=playlist_id,
+        title=source.title,
+        artist=source.artist,
+        album=source.album,
+        lyrics=source.lyrics,
+        genre=source.genre,
+        duration_seconds=source.duration_seconds,
+        position=(last_position if last_position is not None else -1) + 1,
+        audio_filename=source.audio_filename,
+        audio_content_type=source.audio_content_type,
+        audio_path=source.audio_path,
+        cover_filename=source.cover_filename,
+        cover_content_type=source.cover_content_type,
+        cover_path=source.cover_path,
+    )
+    db.add(copied)
+    db.commit()
+    db.refresh(copied)
+    return copied
 @router.post(
     "/playlists/{playlist_id}/tracks/upload",
     response_model=TrackRead,
@@ -510,6 +733,7 @@ def update_track(track_id: int, track_in: TrackUpdate, db: DbSession) -> Track:
 def mark_track_played(track_id: int, db: DbSession) -> Track:
     track = get_track_or_404(track_id, db)
     track.play_count += 1
+    db.add(ListeningEvent(track_id=track.id))
     db.commit()
     db.refresh(track)
     return track
@@ -530,6 +754,28 @@ def enrich_track_metadata(track_id: int, db: DbSession) -> Track:
     except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, ValueError):
         pass
     return track
+
+
+@router.get("/listening/stats")
+def listening_stats(db: DbSession) -> dict:
+    tracks = list(db.scalars(select(Track).order_by(Track.play_count.desc(), Track.title)).all())
+    events = list(db.scalars(select(ListeningEvent).order_by(ListeningEvent.listened_at.desc()).limit(20)).all())
+    tracks_by_id = {track.id: track for track in tracks}
+    recent = [tracks_by_id[event.track_id] for event in events if event.track_id in tracks_by_id]
+    artist_counts: dict[str, int] = {}
+    genre_counts: dict[str, int] = {}
+    for track in tracks:
+        artist_counts[track.artist] = artist_counts.get(track.artist, 0) + track.play_count
+        genre = track.genre or "Unsorted"
+        genre_counts[genre] = genre_counts.get(genre, 0) + track.play_count
+    return {
+        "total_listens": sum(track.play_count for track in tracks),
+        "total_minutes": round(sum((track.duration_seconds or 0) * track.play_count for track in tracks) / 60),
+        "top_tracks": [TrackRead.model_validate(track).model_dump(mode="json") for track in tracks[:8]],
+        "top_artists": sorted(({"name": name, "listens": count} for name, count in artist_counts.items()), key=lambda item: item["listens"], reverse=True)[:6],
+        "top_genres": sorted(({"name": name, "listens": count} for name, count in genre_counts.items()), key=lambda item: item["listens"], reverse=True)[:6],
+        "recent": [TrackRead.model_validate(track).model_dump(mode="json") for track in recent],
+    }
 
 
 def lyric_candidates(value: str) -> list[str]:
@@ -556,13 +802,14 @@ def fetch_json(url: str) -> dict:
 def fetch_lrclib(artist: str, title: str) -> str | None:
     query = urlencode({"artist_name": artist, "track_name": title})
     payload = fetch_json(f"https://lrclib.net/api/get?{query}")
-    plain = str(payload.get("plainLyrics") or "").strip()
-    if plain:
-        return plain
     synced = str(payload.get("syncedLyrics") or "").strip()
     if synced:
-        return "\n".join(line.split("]", 1)[-1].strip() for line in synced.splitlines()).strip()
-    return None
+        # Preserve the timestamps so the player can highlight and scroll in sync
+        # with the audio. Plain lyrics remain the fallback when no synced version
+        # is available from the provider.
+        return synced
+    plain = str(payload.get("plainLyrics") or "").strip()
+    return plain or None
 
 
 def fetch_lyrics_ovh(artist: str, title: str) -> str | None:
@@ -612,6 +859,20 @@ async def upload_track_cover(
 def delete_track(track_id: int, db: DbSession) -> Response:
     track = get_track_or_404(track_id, db)
     db.delete(track)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/playlists/{playlist_id}/tracks/bulk-delete", status_code=status.HTTP_204_NO_CONTENT)
+def bulk_delete_tracks(playlist_id: int, track_ids: list[int], db: DbSession) -> Response:
+    playlist = db.get(Playlist, playlist_id)
+    if playlist is None:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    if not track_ids:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    tracks = list(db.scalars(select(Track).where(Track.playlist_id == playlist_id, Track.id.in_(track_ids))).all())
+    for track in tracks:
+        db.delete(track)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
