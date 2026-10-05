@@ -21,6 +21,7 @@ const state = {
   lastPlaybackTime: null,
   countedListenTrackId: null,
   nowPlayingClosing: false,
+  syncedLyricLine: null,
   lyricRefresh: Number(localStorage.getItem("ydkmusic-lyric-refresh") || 0),
 };
 
@@ -32,6 +33,7 @@ const connectionLabel = byId("connection-label");
 const statusLight = document.querySelector(".status-light");
 const audioEngine = byId("audio-engine");
 const visualizer = byId("now-playing-visualizer");
+const topbarVisualizer = byId("topbar-visualizer");
 const savedSidebarState = localStorage.getItem("ydkmusic-sidebar-collapsed") === "true";
 let playerTrack = null;
 let audioContext = null;
@@ -40,6 +42,8 @@ let audioSource = null;
 let frequencyData = null;
 let bassEnergy = 0;
 let peakLevels = [];
+let artThemeRequest = 0;
+let artThemeUrl = null;
 
 function crossfadeArtwork(previous) {
   if (!previous?.a || !previous?.b) return;
@@ -74,7 +78,11 @@ function setupAudioAnalyzer() {
 }
 
 function drawVisualizer() {
-  if (!visualizer) return;
+  drawTopbarVisualizer();
+  if (!visualizer) {
+    requestAnimationFrame(drawVisualizer);
+    return;
+  }
   const bounds = visualizer.getBoundingClientRect();
   const ratio = window.devicePixelRatio || 1;
   visualizer.width = Math.max(1, bounds.width * ratio);
@@ -134,6 +142,109 @@ function drawVisualizer() {
   context.fillStyle = glow;
   context.fillRect(0, 0, bounds.width, bounds.height);
   requestAnimationFrame(drawVisualizer);
+}
+
+function drawTopbarVisualizer() {
+  if (!topbarVisualizer) return;
+  const bounds = topbarVisualizer.getBoundingClientRect();
+  const ratio = window.devicePixelRatio || 1;
+  topbarVisualizer.width = Math.max(1, bounds.width * ratio);
+  topbarVisualizer.height = Math.max(1, bounds.height * ratio);
+  const context = topbarVisualizer.getContext("2d");
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, bounds.width, bounds.height);
+  if (!bounds.width) return;
+
+  if (analyser && frequencyData && !audioEngine.paused) analyser.getByteFrequencyData(frequencyData);
+  const bassBins = Math.max(1, Math.floor((frequencyData?.length || 1) * .16));
+  const bassAverage = frequencyData
+    ? frequencyData.slice(0, bassBins).reduce((sum, value) => sum + value, 0) / bassBins / 255
+    : 0;
+  bassEnergy = bassEnergy * .84 + bassAverage * .16;
+  document.documentElement.style.setProperty("--bass-hit", String(Math.min(1, bassEnergy * 1.8)));
+  const artA = getComputedStyle(document.documentElement).getPropertyValue("--art-a").trim() || "#c5d77b";
+  const artB = getComputedStyle(document.documentElement).getPropertyValue("--art-b").trim() || "#7e8cc7";
+  const accent = getComputedStyle(document.documentElement).getPropertyValue("--art-accent").trim() || "#c5d77b";
+  const energy = audioEngine.paused ? .45 : .8 + bassEnergy * .6;
+  const time = performance.now() * .001;
+  const drawWave = (color, phase, amplitude, thickness, alpha) => {
+    context.beginPath();
+    for (let x = -24; x <= bounds.width + 24; x += 8) {
+      const progress = x / Math.max(1, bounds.width);
+      const wave = Math.sin(progress * Math.PI * 4.2 + phase + time * .8) * amplitude
+        + Math.sin(progress * Math.PI * 8.5 - phase * .65 - time * .55) * amplitude * .28;
+      const y = bounds.height / 2 + wave * energy;
+      if (x === -24) context.moveTo(x, y);
+      else context.lineTo(x, y);
+    }
+    context.strokeStyle = color;
+    context.globalAlpha = alpha;
+    context.lineWidth = thickness;
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.shadowColor = color;
+    context.shadowBlur = 10;
+    context.stroke();
+    context.shadowBlur = 0;
+  };
+  drawWave(artB, bassEnergy * 1.8, bounds.height * .29, 10, .9);
+  drawWave(artA, 1.7 - bassEnergy, bounds.height * .24, 9, .86);
+  drawWave(accent, 3.5 + bassEnergy, bounds.height * .16, 5, .98);
+  drawWave("rgba(255,255,255,.8)", 2.4, bounds.height * .08, 2, .72);
+  context.globalAlpha = 1;
+}
+
+function updateArtTheme(url) {
+  const nextUrl = url || null;
+  if (nextUrl === artThemeUrl) return;
+  artThemeUrl = nextUrl;
+  const requestId = ++artThemeRequest;
+  if (!nextUrl) {
+    resetArtTheme();
+    return;
+  }
+
+  const image = new Image();
+  image.crossOrigin = "anonymous";
+  image.onload = () => {
+    if (requestId !== artThemeRequest || artThemeUrl !== nextUrl) return;
+    try {
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      canvas.width = 40;
+      canvas.height = 40;
+      context.drawImage(image, 0, 0, 40, 40);
+      const pixels = context.getImageData(0, 0, 40, 40).data;
+      const colors = [];
+      for (let index = 0; index < pixels.length; index += 16) {
+        const red = pixels[index];
+        const green = pixels[index + 1];
+        const blue = pixels[index + 2];
+        const brightness = (red + green + blue) / 3;
+        if (brightness > 18 && brightness < 235) colors.push({ red, green, blue, brightness });
+      }
+      if (!colors.length) return;
+      colors.sort((first, second) => second.brightness - first.brightness);
+      const mainColor = colors[Math.floor(colors.length * 0.35)] || colors[0];
+      const secondColor = colors[Math.floor(colors.length * 0.75)] || colors[colors.length - 1];
+      const colorA = `rgb(${mainColor.red}, ${mainColor.green}, ${mainColor.blue})`;
+      const colorB = `rgb(${secondColor.red}, ${secondColor.green}, ${secondColor.blue})`;
+      const previous = {
+        a: getComputedStyle(document.documentElement).getPropertyValue("--art-a").trim(),
+        b: getComputedStyle(document.documentElement).getPropertyValue("--art-b").trim(),
+        accent: getComputedStyle(document.documentElement).getPropertyValue("--art-accent").trim(),
+      };
+      crossfadeArtwork(previous);
+      document.documentElement.style.setProperty("--art-a", colorA);
+      document.documentElement.style.setProperty("--art-b", colorB);
+      document.documentElement.style.setProperty("--art-glow", `rgba(${mainColor.red}, ${mainColor.green}, ${mainColor.blue}, .2)`);
+      document.documentElement.style.setProperty("--art-accent", colorA);
+    } catch {
+      if (requestId === artThemeRequest) resetArtTheme();
+    }
+  };
+  image.onerror = () => { if (requestId === artThemeRequest) resetArtTheme(); };
+  image.src = nextUrl;
 }
 
 function updateMediaSession() {
@@ -200,71 +311,6 @@ function resetArtTheme() {
   document.documentElement.style.setProperty("--art-accent", "#c5d77b");
 }
 
-function updateArtTheme(url) {
-  if (!url) {
-    resetArtTheme();
-    return;
-  }
-
-  const image = new Image();
-  image.crossOrigin = "anonymous";
-
-  image.onload = () => {
-    try {
-      const canvas = document.createElement("canvas");
-      const context = canvas.getContext("2d", { willReadFrequently: true });
-
-      canvas.width = 40;
-      canvas.height = 40;
-      context.drawImage(image, 0, 0, 40, 40);
-
-      const pixels = context.getImageData(0, 0, 40, 40).data;
-      const colors = [];
-
-      for (let index = 0; index < pixels.length; index += 16) {
-        const red = pixels[index];
-        const green = pixels[index + 1];
-        const blue = pixels[index + 2];
-        const brightness = (red + green + blue) / 3;
-
-        if (brightness > 18 && brightness < 235) {
-          colors.push({ red, green, blue, brightness });
-        }
-      }
-
-      if (!colors.length) {
-        resetArtTheme();
-        return;
-      }
-
-      colors.sort((first, second) => second.brightness - first.brightness);
-
-      const mainColor = colors[Math.floor(colors.length * 0.35)] || colors[0];
-      const secondColor = colors[Math.floor(colors.length * 0.75)] || colors[colors.length - 1];
-
-      const colorA = `rgb(${mainColor.red}, ${mainColor.green}, ${mainColor.blue})`;
-      const colorB = `rgb(${secondColor.red}, ${secondColor.green}, ${secondColor.blue})`;
-      const glow = `rgba(${mainColor.red}, ${mainColor.green}, ${mainColor.blue}, .2)`;
-
-      const previous = {
-        a: getComputedStyle(document.documentElement).getPropertyValue("--art-a").trim(),
-        b: getComputedStyle(document.documentElement).getPropertyValue("--art-b").trim(),
-        accent: getComputedStyle(document.documentElement).getPropertyValue("--art-accent").trim(),
-      };
-      crossfadeArtwork(previous);
-      document.documentElement.style.setProperty("--art-a", colorA);
-      document.documentElement.style.setProperty("--art-b", colorB);
-      document.documentElement.style.setProperty("--art-glow", glow);
-      document.documentElement.style.setProperty("--art-accent", colorA);
-    } catch {
-      resetArtTheme();
-    }
-  };
-
-  image.onerror = resetArtTheme;
-  image.src = url;
-}
-
 function showToast(message, isError = false) {
   const toast = byId("toast");
   toast.textContent = message;
@@ -285,7 +331,7 @@ function renderSongLabResult(result) {
         <h3>${value(result.title, "Untitled song")}</h3>
         <p>${value(result.artist, "Unknown artist")}${result.album ? ` · ${escapeHtml(result.album)}` : ""}</p>
       </div>
-      ${result.cover_url ? `<img src="${escapeHtml(result.cover_url)}" alt="" />` : ""}
+      ${result.cover_url ? `<div class="song-lab-vinyl" aria-label="Cover artwork"><span class="song-lab-record"><img src="${escapeHtml(result.cover_url)}" alt="" /></span><span class="song-lab-label" aria-hidden="true"></span></div>` : `<div class="song-lab-vinyl song-lab-vinyl-empty" aria-hidden="true"><span class="song-lab-record">♪</span></div>`}
     </div>
     <div class="song-lab-metrics">
       <div><strong>${value(result.bpm, "—")}</strong><span>BPM</span></div>
@@ -300,6 +346,7 @@ function renderSongLabResult(result) {
 
 async function analyzeSongFromLab() {
   const query = byId("song-lab-query").value.trim();
+  const artist = byId("song-lab-artist").value.trim();
   const file = byId("song-lab-file").files[0];
   const submit = byId("song-lab-submit");
   const resultBox = byId("song-lab-result");
@@ -326,7 +373,7 @@ async function analyzeSongFromLab() {
           : "File metadata was read locally. No BPM or musical-key data was available.",
       };
     } else {
-      result = await api(`/api/song-analysis?song=${encodeURIComponent(query)}`);
+      result = await api(`/api/song-analysis?song=${encodeURIComponent(query)}${artist ? `&artist=${encodeURIComponent(artist)}` : ""}`);
     }
     renderSongLabResult(result);
   } catch (error) {
@@ -432,6 +479,7 @@ function updateNowPlayingDisplay() {
 function renderLyrics() {
   const view = byId("lyrics-view");
   if (!view || !playerTrack) return;
+  state.syncedLyricLine = null;
   const lyrics = String(playerTrack.lyrics || "").trim();
   view.innerHTML = lyrics
     ? lyrics.split(/\r?\n/).map((line) => {
@@ -446,20 +494,25 @@ function syncLyrics() {
   if (!lines.length || !playerTrack) return;
   let current = lines[0];
   lines.forEach((line) => { if (Number(line.dataset.lyricTime) <= audioEngine.currentTime) current = line; });
+  const changed = state.syncedLyricLine !== current;
   lines.forEach((line) => line.classList.toggle("is-current", line === current));
-  current.scrollIntoView({ behavior: "smooth", block: "center" });
+  state.syncedLyricLine = current;
+  if (changed && !byId("lyrics-panel").hidden) current.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 function renderQueue() {
   const queue = byId("playback-queue");
   if (!queue) return;
+  const queueTitle = byId("queue-title");
+  if (queueTitle) queueTitle.textContent = state.queue.length ? `Up next · ${state.queue.length}` : "Up next";
   queue.innerHTML = state.queue.length
     ? state.queue.map((track, index) => `
         <li class="queue-item" draggable="true" data-queue-index="${index}">
           <input class="queue-select" type="checkbox" data-queue-select="${index}" aria-label="Select ${escapeHtml(track.title)}">
           <span class="queue-index">${index + 1}</span>
+          <span class="queue-swatch ${coverClass(track.cover_url, `tone-${index % 4}`)}"${coverStyle(track.cover_url)}>${track.cover_url ? "" : escapeHtml((track.title || "♪").slice(0, 1).toUpperCase())}</span>
           <span class="queue-copy"><strong>${escapeHtml(track.title)}</strong><small>${escapeHtml(track.artist || "Unknown artist")}</small></span>
-          <span class="queue-item-actions"><button class="queue-save" type="button" data-action="save-queue-track" data-queue-index="${index}" aria-label="Save ${escapeHtml(track.title)} to a playlist" title="Save to playlist">＋</button><button class="queue-remove" type="button" data-action="remove-queue" data-queue-index="${index}" aria-label="Remove ${escapeHtml(track.title)} from queue">×</button></span>
+          <span class="queue-item-actions"><button class="queue-play" type="button" data-action="play-queued-track" data-queue-index="${index}" aria-label="Play ${escapeHtml(track.title)} now" title="Play now">▶</button><button class="queue-save" type="button" data-action="save-queue-track" data-queue-index="${index}" aria-label="Save ${escapeHtml(track.title)} to a playlist" title="Save to playlist">＋</button><button class="queue-remove" type="button" data-action="remove-queue" data-queue-index="${index}" aria-label="Remove ${escapeHtml(track.title)} from queue" title="Remove from queue">×</button></span>
         </li>`).join("")
     : '<li class="queue-empty">Your queue is empty. Add songs from a playlist.</li>';
 }
@@ -476,6 +529,7 @@ function openQueueSaveDialog(index) {
 
 function addToQueue(track, playNext = false) {
   if (!track?.audio_url) return showToast("This song does not have an uploaded audio file.", true);
+  if (state.queue.some((queued) => queued.id === track.id)) return showToast("That song is already in the queue.", true);
   if (playNext) state.queue.unshift(track);
   else state.queue.push(track);
   localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
@@ -560,6 +614,7 @@ function updatePlayerDisplay() {
   const totalTime = byId("player-total-time");
   const volumeValue = byId("player-volume-value");
   const muteButton = byId("player-mute");
+  document.body.classList.toggle("is-audio-playing", Boolean(playerTrack && !audioEngine.paused));
 
   const visibleVolume = audioEngine.muted ? 0 : audioEngine.volume;
   volumeValue.textContent = `${Math.round(visibleVolume * 100)}%`;
@@ -657,6 +712,7 @@ function playbackTracks() {
 async function playNextTrack() {
   if (state.queue.length) {
     const nextQueued = state.queue.shift();
+    localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
     renderQueue();
     await playTrack(nextQueued);
     return;
@@ -940,8 +996,9 @@ function renderTrackRows() {
         </span>
       </div>
       <span class="track-album" title="${escapeHtml(track.album || "")}">${escapeHtml(track.album || "—")}</span>
-      <span class="track-duration">${formatDuration(track.duration_seconds)}<small class="track-listens">${track.play_count || 0} plays</small></span>
+  <span class="track-duration">${formatDuration(track.duration_seconds)}<small class="track-listens">${track.play_count || 0} plays</small></span>
 <span class="track-actions">
+  ${track.audio_url ? `<button class="row-action" type="button" data-action="play-next" data-track-id="${track.id}" aria-label="Play ${escapeHtml(track.title)} next" title="Play next">⏭</button>` : ""}
   <button
     class="row-action"
     type="button"
@@ -1172,6 +1229,19 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
+  const queueItem = event.target.closest(".queue-item");
+  if (queueItem && !event.target.closest("button, input, a")) {
+    const index = Number(queueItem.dataset.queueIndex);
+    const track = state.queue[index];
+    if (track) {
+      state.queue.splice(index, 1);
+      localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
+      renderQueue();
+      await playTrack(track);
+    }
+    return;
+  }
+
   const actionButton = event.target.closest("[data-action]");
   if (!actionButton) return;
   const { action } = actionButton.dataset;
@@ -1212,6 +1282,16 @@ document.addEventListener("click", async (event) => {
     state.queue.splice(Number(actionButton.dataset.queueIndex), 1);
     localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
     renderQueue();
+  }
+  if (action === "play-queued-track") {
+    const index = Number(actionButton.dataset.queueIndex);
+    const track = state.queue[index];
+    if (track) {
+      state.queue.splice(index, 1);
+      localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
+      renderQueue();
+      await playTrack(track);
+    }
   }
   if (action === "save-queue-track") openQueueSaveDialog(Number(actionButton.dataset.queueIndex));
   if (action === "save-queue-to-playlist") {
@@ -1936,6 +2016,12 @@ document.addEventListener("keydown", async (event) => {
   if (key === "l" && !byId("now-playing").hidden) {
     event.preventDefault();
     byId("now-playing-like").click();
+    return;
+  }
+
+  if (key === "o" && byId("now-playing").hidden && playerTrack) {
+    event.preventDefault();
+    updateNowPlayingDisplay();
     return;
   }
 

@@ -6,8 +6,8 @@
     <meta name="theme-color" content="#171916" />
     <meta name="description" content="A simple place to keep the music you love." />
     <title>Side B — Playlist Manager</title>
-    <link rel="stylesheet" href="/static/styles.css" />
-    <script src="/static/app.js" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20261005-15" />
+    <script src="/static/app.js?v=20261005-15" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -72,6 +72,7 @@
 
       <main class="main-area">
         <header class="topbar">
+          <canvas id="topbar-visualizer" class="topbar-visualizer" aria-hidden="true"></canvas>
           <div class="crumbs"><span>COLLECTION</span><span class="crumb-slash">/</span><span>PLAYLISTS</span></div>
           <a class="api-link" href="/docs" target="_blank" rel="noreferrer">API docs <span aria-hidden="true">↗</span></a>
         </header>
@@ -114,6 +115,8 @@
         <p class="dialog-intro">Attach a local file for a quick read, or search the public catalog for a match.</p>
         <label for="song-lab-query">Song name</label>
         <input id="song-lab-query" name="song" maxlength="160" required placeholder="Song title — artist" />
+        <label for="song-lab-artist">Artist <span class="optional">(partial name is okay)</span></label>
+        <input id="song-lab-artist" name="artist" maxlength="150" placeholder="Harry or Styles" />
         <label for="song-lab-file">Audio file <span class="optional">(optional)</span></label>
         <input id="song-lab-file" name="file" type="file" accept=".mp3,.wav,.ogg,.flac,.m4a,.aac,.webm,audio/*" />
         <p class="file-help">Local files stay on this device while metadata is read. Without a file, Song Lab searches online catalogs.</p>
@@ -261,9 +264,9 @@
 
       <audio id="audio-engine" preload="metadata"></audio>
     </section>
-    <canvas id="now-playing-visualizer" class="now-playing-visualizer" aria-hidden="true"></canvas>
     <section id="now-playing" class="now-playing" hidden aria-label="Now playing">
       <div class="now-playing-backdrop" id="now-playing-backdrop"></div>
+      <canvas id="now-playing-visualizer" class="now-playing-visualizer" aria-hidden="true"></canvas>
 
       <div class="now-playing-topbar">
         <span class="eyebrow">Now playing</span>

@@ -6,3 +6,4 @@ python-multipart>=0.0.9,<1.0
 mutagen>=1.47,<2.0
 librosa>=0.10,<1.0
 soundfile>=0.12,<1.0
+python-dotenv>=1.0,<2.0
