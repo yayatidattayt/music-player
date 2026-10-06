@@ -401,10 +401,13 @@
             </div>
             <ol id="playback-queue" class="queue-list"></ol>
           </section>
+
         </div>
 
         <button id="lyrics-toggle" class="lyrics-tab" type="button" aria-expanded="false" aria-controls="lyrics-panel">♫ <span>Lyrics</span></button>
-        <section id="lyrics-panel" class="lyrics-panel" aria-labelledby="lyrics-title" hidden>
+      </div>
+
+      <section id="lyrics-panel" class="lyrics-panel" aria-labelledby="lyrics-title" hidden>
           <div class="lyrics-heading">
             <div>
               <span class="eyebrow">Words for the moment</span>
@@ -412,8 +415,17 @@
             </div>
             <div class="lyrics-heading-actions">
               <button id="lyrics-fetch" class="lyrics-edit" type="button">Find lyrics</button>
+              <button id="lyrics-sync" class="lyrics-edit" type="button" title="Analyze the audio start and align timestamped lyrics">Sync audio</button>
               <button id="lyrics-edit" class="lyrics-edit" type="button">Edit</button>
+              <button id="lyrics-close" class="lyrics-close" type="button" aria-label="Close lyrics panel" title="Close lyrics panel">×</button>
             </div>
+          </div>
+          <div class="lyrics-timing" aria-label="Fine tune lyric timing">
+            <span>Timing <strong id="lyrics-offset-value">0.0s</strong></span>
+            <button id="lyrics-mark-start" class="lyrics-timing-reset" type="button" title="Click when the first lyric line starts">Anchor first line</button>
+            <button id="lyrics-offset-down" class="lyrics-timing-button" type="button" aria-label="Move lyrics earlier by 0.1 seconds">−</button>
+            <button id="lyrics-offset-up" class="lyrics-timing-button" type="button" aria-label="Move lyrics later by 0.1 seconds">+</button>
+            <button id="lyrics-offset-reset" class="lyrics-timing-reset" type="button">Reset</button>
           </div>
           <div id="lyrics-view" class="lyrics-view">
             <p class="lyrics-empty">No lyrics added yet.</p>
@@ -425,8 +437,7 @@
               <button id="lyrics-save" class="button button-accent" type="button">Save lyrics</button>
             </div>
           </div>
-        </section>
-      </div>
+      </section>
     </section>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </body>

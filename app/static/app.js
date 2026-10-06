@@ -22,6 +22,14 @@ const state = {
   countedListenTrackId: null,
   nowPlayingClosing: false,
   syncedLyricLine: null,
+  lyricScrollFrame: null,
+  lyricRenderKey: "",
+  lyricOffset: 0,
+  lyricManualOffset: 0,
+  lyricClockFrame: null,
+  lyricUsesEstimates: false,
+  lyricAnalysisTrackId: null,
+  lyricAnalyzing: false,
   lyricRefresh: Number(localStorage.getItem("ydkmusic-lyric-refresh") || 0),
 };
 
@@ -479,25 +487,174 @@ function updateNowPlayingDisplay() {
 function renderLyrics() {
   const view = byId("lyrics-view");
   if (!view || !playerTrack) return;
-  state.syncedLyricLine = null;
   const lyrics = String(playerTrack.lyrics || "").trim();
-  view.innerHTML = lyrics
-    ? lyrics.split(/\r?\n/).map((line) => {
-      const match = line.match(/^\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)$/);
-      return `<p${match ? ` data-lyric-time="${Number(match[1]) * 60 + Number(match[2])}"` : ""}>${escapeHtml(match ? match[3] : line) || "&nbsp;"}</p>`;
-    }).join("")
-    : '<p class="lyrics-empty">No lyrics added yet.<br><span>Use Edit to add them for this song.</span></p>';
+  const duration = Number(audioEngine.duration) || Number(playerTrack.duration_seconds) || 0;
+  const renderKey = `${playerTrack.id}:${lyrics}:${Math.round(duration)}`;
+  if (state.lyricRenderKey === renderKey) return;
+  state.lyricRenderKey = renderKey;
+  state.syncedLyricLine = null;
+
+  if (!lyrics) {
+    view.innerHTML = '<p class="lyrics-empty">No lyrics added yet.<br><span>Use Edit to add them for this song.</span></p>';
+    return;
+  }
+
+  const rawLines = lyrics.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const parsedLines = rawLines.flatMap((line) => {
+    const timestamps = [...line.matchAll(/\[(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)\]/g)];
+    const text = line.replace(/\[(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)\]/g, "").trim();
+    if (!timestamps.length) return [{ text: line, time: null }];
+    return timestamps.map((match) => ({
+      text,
+      time: Number(match[1] || 0) * 3600 + Number(match[2]) * 60 + Number(match[3]),
+    }));
+  });
+  const hasTimestamps = parsedLines.some((line) => line.time !== null);
+  state.lyricUsesEstimates = !hasTimestamps;
+  const allLines = hasTimestamps
+    ? parsedLines
+    : parsedLines.map((line, index) => ({
+      ...line,
+      time: duration ? Math.max(0, duration * .06 + (index / Math.max(1, parsedLines.length - 1)) * duration * .84) : null,
+      estimated: true,
+    }));
+
+  view.innerHTML = allLines.map((line) => {
+    const timed = line.time !== null;
+    const classes = timed ? (line.estimated ? "lyric-timed lyric-estimated" : "lyric-timed") : "lyric-untimed";
+    return `<p class="${classes}"${timed ? ` data-lyric-time="${line.time}"` : ""}>${escapeHtml(line.text) || "&nbsp;"}</p>`;
+  }).join("");
+}
+
+async function analyzeAudioLyricsOffset(track = playerTrack) {
+  if (!track?.audio_url || !window.OfflineAudioContext && !window.webkitOfflineAudioContext) return 0;
+  if (state.lyricAnalyzing && state.lyricAnalysisTrackId === track.id) return state.lyricOffset;
+
+  const cached = sessionStorage.getItem(`sideb-lyrics-offset-${track.id}`);
+  if (cached !== null) {
+    state.lyricOffset = Number(cached) || 0;
+    state.lyricAnalysisTrackId = track.id;
+    return state.lyricOffset;
+  }
+
+  state.lyricAnalyzing = true;
+  state.lyricAnalysisTrackId = track.id;
+  const syncButton = byId("lyrics-sync");
+  if (syncButton) {
+    syncButton.disabled = true;
+    syncButton.textContent = "Analyzing…";
+  }
+
+  try {
+    const response = await fetch(track.audio_url);
+    if (!response.ok) throw new Error("Audio could not be analyzed.");
+    const buffer = await response.arrayBuffer();
+    const Context = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    const decoder = new Context(1, 1, 44100);
+    const decoded = await decoder.decodeAudioData(buffer);
+    const sampleRate = decoded.sampleRate;
+    const channelCount = decoded.numberOfChannels;
+    const sampleCount = decoded.length;
+    const windowSize = Math.max(512, Math.floor(sampleRate * .035));
+    const threshold = .012;
+    let firstAudibleSample = 0;
+
+    for (let start = 0; start < sampleCount; start += windowSize) {
+      let energy = 0;
+      const end = Math.min(sampleCount, start + windowSize);
+      const length = end - start;
+      for (let channel = 0; channel < channelCount; channel += 1) {
+        const samples = decoded.getChannelData(channel);
+        for (let index = start; index < end; index += 1) energy += Math.abs(samples[index]);
+      }
+      const average = energy / Math.max(1, length * channelCount);
+      if (average >= threshold) {
+        firstAudibleSample = start;
+        break;
+      }
+    }
+
+    state.lyricOffset = Math.min(8, firstAudibleSample / sampleRate);
+    sessionStorage.setItem(`sideb-lyrics-offset-${track.id}`, String(state.lyricOffset));
+    syncLyrics();
+    showToast(state.lyricOffset > .15
+      ? `Lyrics aligned with a ${state.lyricOffset.toFixed(1)}s audio lead-in.`
+      : "Lyrics are already aligned with the audio.");
+  } catch (error) {
+    state.lyricOffset = 0;
+    showToast(error.message || "Audio analysis was unavailable.", true);
+  } finally {
+    state.lyricAnalyzing = false;
+    if (syncButton) {
+      syncButton.disabled = false;
+      syncButton.textContent = "Sync audio";
+    }
+  }
+  return state.lyricOffset;
 }
 
 function syncLyrics() {
-  const lines = [...document.querySelectorAll("#lyrics-view p[data-lyric-time]")];
+  const lines = [...document.querySelectorAll("#lyrics-view p[data-lyric-time]")]
+    .sort((a, b) => Number(a.dataset.lyricTime) - Number(b.dataset.lyricTime));
   if (!lines.length || !playerTrack) return;
-  let current = lines[0];
-  lines.forEach((line) => { if (Number(line.dataset.lyricTime) <= audioEngine.currentTime) current = line; });
+  // LRC timestamps are already expressed on the audio file's timeline. Only
+  // estimated plain lyrics need the detected leading-audio offset.
+  const lyricTime = Math.max(0, audioEngine.currentTime
+    - (state.lyricUsesEstimates ? state.lyricOffset : 0)
+    + state.lyricManualOffset);
+  const current = [...lines].reverse().find((line) => Number(line.dataset.lyricTime) <= lyricTime) || null;
   const changed = state.syncedLyricLine !== current;
   lines.forEach((line) => line.classList.toggle("is-current", line === current));
   state.syncedLyricLine = current;
-  if (changed && !byId("lyrics-panel").hidden) current.scrollIntoView({ behavior: "smooth", block: "center" });
+  if (changed && current && !byId("lyrics-panel").hidden) {
+    const view = byId("lyrics-view");
+    const lineTop = current.offsetTop;
+    const lineBottom = lineTop + current.offsetHeight;
+    const visibleTop = view.scrollTop + view.clientHeight * 0.2;
+    const visibleBottom = view.scrollTop + view.clientHeight * 0.8;
+    if (lineTop < visibleTop || lineBottom > visibleBottom) {
+      const start = view.scrollTop;
+      const target = Math.max(0, lineTop - view.clientHeight * 0.42);
+      const distance = target - start;
+      if (Math.abs(distance) > 2) {
+        if (state.lyricScrollFrame) cancelAnimationFrame(state.lyricScrollFrame);
+        const startedAt = performance.now();
+        const duration = 520;
+        const animateScroll = (now) => {
+          const progress = Math.min(1, (now - startedAt) / duration);
+          const eased = progress < .5
+            ? 2 * progress * progress
+            : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+          view.scrollTop = start + distance * eased;
+          if (progress < 1) state.lyricScrollFrame = requestAnimationFrame(animateScroll);
+          else state.lyricScrollFrame = null;
+        };
+        state.lyricScrollFrame = requestAnimationFrame(animateScroll);
+      }
+    }
+  }
+}
+
+function updateLyricsTimingDisplay() {
+  const value = byId("lyrics-offset-value");
+  if (value) value.textContent = `${state.lyricManualOffset >= 0 ? "+" : ""}${state.lyricManualOffset.toFixed(1)}s`;
+}
+
+function startLyricsClock() {
+  if (state.lyricClockFrame) return;
+  const tick = () => {
+    state.lyricClockFrame = null;
+    if (!audioEngine.paused && playerTrack) {
+      syncLyrics();
+      state.lyricClockFrame = requestAnimationFrame(tick);
+    }
+  };
+  state.lyricClockFrame = requestAnimationFrame(tick);
+}
+
+function stopLyricsClock() {
+  if (state.lyricClockFrame) cancelAnimationFrame(state.lyricClockFrame);
+  state.lyricClockFrame = null;
 }
 
 function renderQueue() {
@@ -565,6 +722,12 @@ function closeNowPlaying() {
   }, 280);
   visualizer.hidden = true;
   byId("lyrics-panel").hidden = true;
+  byId("lyrics-toggle").setAttribute("aria-expanded", "false");
+}
+
+function closeLyricsPanel() {
+  const panel = byId("lyrics-panel");
+  panel.hidden = true;
   byId("lyrics-toggle").setAttribute("aria-expanded", "false");
 }
 
@@ -683,6 +846,10 @@ async function playTrack(track) {
   }
 
   playerTrack = track;
+  state.lyricOffset = 0;
+  state.lyricManualOffset = Number(localStorage.getItem(`sideb-lyrics-manual-offset-${track.id}`)) || 0;
+  state.lyricAnalysisTrackId = null;
+  updateLyricsTimingDisplay();
   updateMediaSession();
   updateArtTheme(track.cover_url || state.activePlaylist?.cover_url);
   audioEngine.src = track.audio_url;
@@ -693,6 +860,7 @@ async function playTrack(track) {
   audioEngine.load();
 
   updatePlayerDisplay();
+  analyzeAudioLyricsOffset(track);
 
   try {
     await audioEngine.play();
@@ -1719,18 +1887,21 @@ audioEngine.addEventListener("loadedmetadata", () => {
 });
 
 audioEngine.addEventListener("play", () => {
+  startLyricsClock();
   updateMediaSessionState();
   updatePlayerDisplay();
   renderPlaylist();
 });
 
 audioEngine.addEventListener("pause", () => {
+  stopLyricsClock();
   updateMediaSessionState();
   updatePlayerDisplay();
   renderPlaylist();
 });
 
 audioEngine.addEventListener("ended", () => {
+  stopLyricsClock();
   playNextTrack();
 });
 
@@ -1819,6 +1990,33 @@ byId("lyrics-toggle").addEventListener("click", () => {
   const isOpen = !panel.hidden;
   panel.hidden = isOpen;
   byId("lyrics-toggle").setAttribute("aria-expanded", String(!isOpen));
+  if (!isOpen) syncLyrics();
+});
+
+byId("lyrics-close").addEventListener("click", closeLyricsPanel);
+
+byId("lyrics-mark-start").addEventListener("click", () => {
+  if (!playerTrack) return;
+  const firstLine = [...document.querySelectorAll("#lyrics-view p[data-lyric-time]")]
+    .sort((a, b) => Number(a.dataset.lyricTime) - Number(b.dataset.lyricTime))[0];
+  if (!firstLine) {
+    showToast("These lyrics do not have a line to sync yet.", true);
+    return;
+  }
+
+  const firstLineTime = Number(firstLine.dataset.lyricTime);
+  const automaticOffset = state.lyricUsesEstimates ? state.lyricOffset : 0;
+  state.lyricManualOffset = Math.round((firstLineTime - audioEngine.currentTime + automaticOffset) * 10) / 10;
+  state.lyricManualOffset = Math.max(-60, Math.min(60, state.lyricManualOffset));
+  localStorage.setItem(`sideb-lyrics-manual-offset-${playerTrack.id}`, String(state.lyricManualOffset));
+  updateLyricsTimingDisplay();
+  syncLyrics();
+  const lyricLines = [...document.querySelectorAll("#lyrics-view p[data-lyric-time]")]
+    .sort((a, b) => Number(a.dataset.lyricTime) - Number(b.dataset.lyricTime));
+  lyricLines.forEach((line) => line.classList.toggle("is-current", line === firstLine));
+  state.syncedLyricLine = firstLine;
+  firstLine.scrollIntoView({ behavior: "smooth", block: "center" });
+  showToast("First line anchored and saved for this song.");
 });
 
 byId("lyrics-fetch").addEventListener("click", async () => {
@@ -1843,6 +2041,37 @@ byId("lyrics-fetch").addEventListener("click", async () => {
     fetchButton.disabled = false;
     fetchButton.textContent = "Find lyrics";
   }
+});
+
+byId("lyrics-sync").addEventListener("click", async () => {
+  if (!playerTrack) return;
+  sessionStorage.removeItem(`sideb-lyrics-offset-${playerTrack.id}`);
+  state.lyricOffset = 0;
+  await analyzeAudioLyricsOffset(playerTrack);
+});
+
+byId("lyrics-offset-down").addEventListener("click", () => {
+  if (!playerTrack) return;
+  state.lyricManualOffset = Math.max(-60, Math.min(60, Math.round((state.lyricManualOffset + .1) * 10) / 10));
+  localStorage.setItem(`sideb-lyrics-manual-offset-${playerTrack.id}`, String(state.lyricManualOffset));
+  updateLyricsTimingDisplay();
+  syncLyrics();
+});
+
+byId("lyrics-offset-up").addEventListener("click", () => {
+  if (!playerTrack) return;
+  state.lyricManualOffset = Math.max(-60, Math.min(60, Math.round((state.lyricManualOffset - .1) * 10) / 10));
+  localStorage.setItem(`sideb-lyrics-manual-offset-${playerTrack.id}`, String(state.lyricManualOffset));
+  updateLyricsTimingDisplay();
+  syncLyrics();
+});
+
+byId("lyrics-offset-reset").addEventListener("click", () => {
+  if (!playerTrack) return;
+  state.lyricManualOffset = 0;
+  localStorage.removeItem(`sideb-lyrics-manual-offset-${playerTrack.id}`);
+  updateLyricsTimingDisplay();
+  syncLyrics();
 });
 
 byId("lyrics-cancel").addEventListener("click", () => {
@@ -1975,6 +2204,11 @@ byId("now-playing-mute").addEventListener("click", () => {
 });
 
 document.addEventListener("keydown", async (event) => {
+  if (event.key === "Escape" && !byId("lyrics-panel").hidden) {
+    closeLyricsPanel();
+    return;
+  }
+
   if (event.key === "Escape" && !byId("now-playing").hidden) {
     closeNowPlaying();
     return;
