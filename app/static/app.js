@@ -53,6 +53,19 @@ let peakLevels = [];
 let artThemeRequest = 0;
 let artThemeUrl = null;
 
+function resetViewScroll() {
+  const scrollToTop = () => {
+    window.scrollTo(0, 0);
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    if (document.scrollingElement) document.scrollingElement.scrollTop = 0;
+    if (playlistView) playlistView.scrollTop = 0;
+  };
+  scrollToTop();
+  requestAnimationFrame(scrollToTop);
+  setTimeout(scrollToTop, 40);
+}
+
 function crossfadeArtwork(previous) {
   if (!previous?.a || !previous?.b) return;
   const layer = document.createElement("div");
@@ -911,6 +924,27 @@ async function playNextTrack() {
     renderPlaylist();
   }
 }
+
+async function playPreviousTrack() {
+  if (!playerTrack) return;
+
+  if (audioEngine.currentTime > 3) {
+    audioEngine.currentTime = 0;
+    updatePlayerDisplay();
+    updateNowPlayingControls();
+    return;
+  }
+
+  const tracks = playbackTracks().filter((track) => track.audio_url);
+  const currentIndex = tracks.findIndex((track) => track.id === playerTrack.id);
+  const previousTrack = tracks[currentIndex - 1];
+
+  if (previousTrack) await playTrack(previousTrack);
+  else audioEngine.currentTime = 0;
+
+  updatePlayerDisplay();
+  updateNowPlayingControls();
+}
 function formatTotalTime(seconds) {
   if (!seconds) return "under a minute";
   const minutes = Math.round(seconds / 60);
@@ -1013,6 +1047,7 @@ function renderLikedSongs() {
 }
 
 async function loadLikedSongs() {
+  resetViewScroll();
   try {
     state.likedTracks = await api("/api/tracks/liked");
     const refreshedTrack = state.likedTracks.find((track) => track.id === playerTrack?.id);
@@ -1022,6 +1057,7 @@ async function loadLikedSongs() {
       if (!byId("now-playing").hidden) updateNowPlayingDisplay();
     }
     renderLikedSongs();
+    resetViewScroll();
   } catch (error) {
     showToast(error.message, true);
   }
@@ -1109,6 +1145,7 @@ function renderHome() {
 
 async function loadHome() {
   state.currentView = "home";
+  resetViewScroll();
   try {
     state.homePlaylists = await Promise.all(state.playlists.map((playlist) => api(`/api/playlists/${playlist.id}`)));
     state.stats = await api("/api/listening/stats");
@@ -1118,6 +1155,7 @@ async function loadHome() {
       state.homePlaylists = await Promise.all(state.playlists.map((playlist) => api(`/api/playlists/${playlist.id}`)));
     }
     renderHome();
+    resetViewScroll();
   } catch (error) {
     showToast(error.message, true);
   }
@@ -1272,6 +1310,7 @@ function renderPlaylist() {
 
 async function loadPlaylist(id) {
   state.currentView = "playlist";
+  resetViewScroll();
   state.activeId = id;
   state.activePlaylist = null;
   const requestId = ++state.detailRequest;
@@ -1290,6 +1329,7 @@ async function loadPlaylist(id) {
     setConnection(true);
     renderSidebar();
     renderPlaylist();
+    resetViewScroll();
   } catch (error) {
     if (requestId !== state.detailRequest) return;
     setConnection(false);
@@ -2140,22 +2180,7 @@ byId("now-playing-next").addEventListener("click", async () => {
 });
 
 byId("now-playing-previous").addEventListener("click", async () => {
-  if (!playerTrack) return;
-
-  if (audioEngine.currentTime > 3) {
-    audioEngine.currentTime = 0;
-    updateNowPlayingControls();
-    return;
-  }
-
-  const tracks = playbackTracks().filter((track) => track.audio_url);
-  const currentIndex = tracks.findIndex((track) => track.id === playerTrack.id);
-  const previousTrack = tracks[currentIndex - 1];
-
-  if (previousTrack) await playTrack(previousTrack);
-  else audioEngine.currentTime = 0;
-
-  updateNowPlayingControls();
+  await playPreviousTrack();
 });
 
 byId("now-playing-like").addEventListener("click", async () => {
@@ -2268,17 +2293,7 @@ document.addEventListener("keydown", async (event) => {
 
   if (key === "p") {
     event.preventDefault();
-    if (audioEngine.currentTime > 3) {
-      audioEngine.currentTime = 0;
-    } else {
-      const tracks = playbackTracks().filter((track) => track.audio_url);
-      const currentIndex = tracks.findIndex((track) => track.id === playerTrack.id);
-      const previousTrack = tracks[currentIndex - 1];
-      if (previousTrack) await playTrack(previousTrack);
-      else audioEngine.currentTime = 0;
-    }
-    updatePlayerDisplay();
-    updateNowPlayingControls();
+    await playPreviousTrack();
     return;
   }
 
