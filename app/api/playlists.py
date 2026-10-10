@@ -8,6 +8,7 @@ from urllib.request import Request, urlopen
 import json
 import os
 import re
+import shutil
 import ssl
 import yt_dlp
 from difflib import SequenceMatcher
@@ -1216,7 +1217,6 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
         'fragment_retries': 2,
         'noprogress': True,
         'outtmpl': str(UPLOAD_DIR / f"{uuid4().hex}.%(ext)s"),
-        'ffmpeg_location': str(UPLOAD_DIR.parent.parent / "ffmpeg.exe"),
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
@@ -1224,6 +1224,10 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
         }],
         'quiet': True,
     }
+    bundled_ffmpeg = UPLOAD_DIR.parent.parent / "ffmpeg.exe"
+    ffmpeg_location = str(bundled_ffmpeg) if bundled_ffmpeg.exists() else shutil.which("ffmpeg")
+    if ffmpeg_location:
+        ydl_opts['ffmpeg_location'] = ffmpeg_location
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

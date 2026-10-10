@@ -4,6 +4,14 @@ cd /d "%~dp0"
 
 echo Starting ydkmusic...
 
+where py >nul 2>&1
+if errorlevel 1 (
+    echo Python is not installed yet.
+    echo Please double-click setup_ydkmusic.bat once, then run this file again.
+    pause
+    exit /b 1
+)
+
 if not exist ".venv\Scripts\python.exe" (
     echo Creating the Python environment...
     py -m venv .venv
@@ -14,12 +22,15 @@ if not exist ".venv\Scripts\python.exe" (
     )
 )
 
-echo Checking required packages...
-".venv\Scripts\python.exe" -m pip install -r requirements.txt
-if errorlevel 1 (
-    echo Package installation failed.
-    pause
-    exit /b 1
+if not exist ".venv\.ydkmusic-dependencies-installed" (
+    echo Installing required packages for the first run...
+    ".venv\Scripts\python.exe" -m pip install -r requirements.txt
+    if errorlevel 1 (
+        echo Package installation failed.
+        pause
+        exit /b 1
+    )
+    type nul > ".venv\.ydkmusic-dependencies-installed"
 )
 
 set "APP_PORT=8000"

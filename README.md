@@ -2,12 +2,25 @@
 
 A small playlist manager with a dark HTML, CSS, and JavaScript interface backed by FastAPI, SQLAlchemy, and SQLite. Create collections, add songs, and keep their details together.
 
-## Run on Windows PowerShell
+## Easiest Windows setup (for someone who has never used Python)
+
+1. Download this repository from GitHub using **Code → Download ZIP**.
+2. Extract the ZIP somewhere easy, such as your Desktop.
+3. Open the extracted project folder. Its name and location can be anything.
+4. Double-click `setup_ydkmusic.bat` and wait for it to finish. It installs Python, the project packages, and FFmpeg when Windows Package Manager is available.
+5. Double-click `start_ydkmusic.bat`.
+6. The website opens automatically. If it does not, open [http://127.0.0.1:8000](http://127.0.0.1:8000).
+
+Keep the black server window open while using the website. Close that window when finished.
+
+If Windows shows a security warning, choose **More info → Run anyway** only if the file came from your trusted copy of this repository. If setup says Python was installed but cannot find it, close the window, open the folder again, and run `setup_ydkmusic.bat` one more time.
+
+## Manual Windows PowerShell setup
 
 Open PowerShell and run:
 
 ```powershell
-cd "$env:USERPROFILE\Documents\day-5-sdp"
+cd "C:\path\to\the\extracted\project-folder"
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
