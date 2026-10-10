@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -7,13 +8,22 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api.playlists import router as playlists_router
+from .api.rooms import cleanup_loop, router as rooms_router
 from .database import Base, engine, migrate_schema
 
 
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     migrate_schema()
-    yield
+    room_cleanup_task = asyncio.create_task(cleanup_loop())
+    try:
+        yield
+    finally:
+        room_cleanup_task.cancel()
+        try:
+            await room_cleanup_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(
@@ -54,3 +64,4 @@ def health() -> dict[str, str]:
 
 
 app.include_router(playlists_router, prefix="/api")
+app.include_router(rooms_router, prefix="/api")

@@ -191,6 +191,21 @@ def normalized_text(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.casefold())
 
 
+def artist_prefix_matches(prefix: str, artist: str | None) -> bool:
+    if not artist:
+        return False
+    normalized_prefix = normalized_text(prefix)
+    normalized_artist = normalized_text(artist)
+    if not normalized_prefix or not normalized_artist:
+        return False
+    return (
+        normalized_prefix == normalized_artist
+        or normalized_prefix in normalized_artist
+        or normalized_artist in normalized_prefix
+        or SequenceMatcher(None, normalized_prefix, normalized_artist).ratio() >= .72
+    )
+
+
 def catalog_title(value: str, artist: str | None = None) -> str:
     cleaned = re.sub(
         r"\s*(?:\([^)]*(?:official|video|audio|lyrics|visualizer)[^)]*\)|\[[^\]]*(?:official|video|audio|lyrics|visualizer)[^\]]*\])\s*$",
@@ -198,9 +213,9 @@ def catalog_title(value: str, artist: str | None = None) -> str:
         value,
         flags=re.IGNORECASE,
     ).strip()
-    if artist and " - " in cleaned:
+    if " - " in cleaned:
         prefix, remainder = cleaned.split(" - ", 1)
-        if normalized_text(prefix) == normalized_text(artist):
+        if artist_prefix_matches(prefix, artist):
             cleaned = remainder.strip()
     return cleaned
 
@@ -210,9 +225,9 @@ def clean_imported_title(value: str, artist: str | None = None) -> str:
     cleaned = re.sub(r"\s*\([^)]*\)\s*$", "", cleaned)
     cleaned = re.sub(r"\s*\[[^\]]*\]\s*$", "", cleaned)
     cleaned = catalog_title(cleaned, artist)
-    if artist and " - " in cleaned:
+    if " - " in cleaned:
         prefix, remainder = cleaned.split(" - ", 1)
-        if normalized_text(prefix) == normalized_text(artist):
+        if artist_prefix_matches(prefix, artist):
             cleaned = remainder.strip()
     cleaned = re.sub(
         r"\s*(?:[-|·:]\s*)?(?:official\s+)?(?:audio|song|video|music\s+video|lyrics?|lyric\s+video|visualizer|visualiser|performance|remaster(?:ed)?|hd|4k)\s*$",

@@ -3884,3 +3884,176 @@ body.is-audio-playing .now-playing-main-control {
   .yt-fetch-row { align-items: stretch; flex-direction: column; }
   .yt-fetch-btn { width: 100%; }
 }
+
+/* Shared listening room */
+.room-launch-button {
+  margin-top: 8px;
+}
+
+.room-sidebar-card {
+  display: grid;
+  gap: 12px;
+  margin: 10px 0 4px;
+  padding: 14px;
+  border: 1px solid rgba(197, 215, 123, .22);
+  border-radius: 16px;
+  background: linear-gradient(145deg, rgba(197, 215, 123, .11), rgba(255, 255, 255, .035));
+  box-shadow: 0 16px 34px rgba(0, 0, 0, .14), inset 0 1px rgba(255, 255, 255, .06);
+}
+
+.room-card-heading,
+.room-card-details,
+.room-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.room-card-heading strong {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: .86rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-card-details {
+  color: var(--muted);
+  font-size: .72rem;
+}
+
+.room-card-details strong {
+  color: var(--accent);
+  letter-spacing: .13em;
+}
+
+.room-connection-state {
+  color: var(--muted);
+  font-size: .65rem;
+  white-space: nowrap;
+}
+
+.room-connection-state.is-live { color: var(--accent); }
+.room-connection-state.is-reconnecting { color: #e6bd79; }
+.room-connection-state.is-error { color: #f39b8d; }
+
+.room-card-actions .button {
+  min-height: 30px;
+  padding: 6px 10px;
+  font-size: .68rem;
+}
+
+.room-request-list {
+  display: grid;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.room-request {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: .7rem;
+  line-height: 1.35;
+}
+
+.room-request strong,
+.room-request em {
+  color: var(--text);
+  font-style: normal;
+}
+
+.room-request-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
+
+.room-request-button {
+  min-width: 25px;
+  min-height: 24px;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .06);
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.room-request-button.is-approve {
+  border-color: rgba(197, 215, 123, .3);
+  color: var(--accent);
+}
+
+.room-dialog {
+  width: min(680px, calc(100vw - 28px));
+}
+
+.room-dialog-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.room-form-section {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, .035);
+}
+
+.room-form-label {
+  margin-bottom: 3px;
+  color: var(--accent);
+  font-size: .7rem;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.room-form-section label {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: .72rem;
+}
+
+.room-form-section input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, .11);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, .18);
+  color: var(--text);
+  font: inherit;
+  padding: 10px 11px;
+  outline: none;
+}
+
+.room-form-section input:focus {
+  border-color: rgba(197, 215, 123, .55);
+  box-shadow: 0 0 0 3px rgba(197, 215, 123, .08);
+}
+
+.room-form-section .button {
+  margin-top: 8px;
+}
+
+.room-dialog-status {
+  min-height: 1.2em;
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: .76rem;
+}
+
+@media (max-width: 620px) {
+  .room-dialog-grid { grid-template-columns: 1fr; }
+}

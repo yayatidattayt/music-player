@@ -11,7 +11,7 @@ cd "$env:USERPROFILE\Documents\day-5-sdp"
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-python -m uvicorn app.main:app --reload
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 If PowerShell blocks virtual environment activation, run this once in that terminal and activate again:
@@ -22,6 +22,8 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000) for the playlist manager. The API's interactive documentation is at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs). The database is created automatically in `data/playlists.db` when the server starts.
+
+On Windows, you can also double-click `start_ydkmusic.bat`. It reuses a healthy server already running on port 8000 and uses port 8001 if that port belongs to another process.
 
 The interface supports creating, searching, editing, and deleting playlists; adding, filtering, editing, and removing songs; and showing song counts and playlist length. Playlist and song data are saved in SQLite.
 

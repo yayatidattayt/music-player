@@ -7,8 +7,8 @@
     <meta name="description" content="A simple place to keep the music you love." />
     <title>Side B — Playlist Manager</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=20261010-2" />
-    <script src="/static/app.js?v=20261007-1" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20261010-5" />
+    <script src="/static/app.js?v=20261010-5" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -59,6 +59,31 @@
           <span>Song Lab</span>
           <small>tempo · key · details</small>
         </button>
+
+        <button id="room-button" class="sidebar-tool-button room-launch-button" type="button">
+          <span class="liked-songs-icon">◉</span>
+          <span>Listening room</span>
+          <small id="room-sidebar-status">Start or join a room</small>
+        </button>
+
+        <section id="room-sidebar-card" class="room-sidebar-card" hidden aria-live="polite">
+          <div class="room-card-heading">
+            <div>
+              <span class="eyebrow">Live room</span>
+              <strong id="room-sidebar-name">Listening room</strong>
+            </div>
+            <span id="room-connection-state" class="room-connection-state">Offline</span>
+          </div>
+          <div class="room-card-details">
+            <span>Code <strong id="room-sidebar-code">—</strong></span>
+            <span id="room-member-count">0 listeners</span>
+          </div>
+          <div id="room-request-list" class="room-request-list" hidden></div>
+          <div class="room-card-actions">
+            <button id="room-copy-invite" class="button button-quiet" type="button">Copy invite</button>
+            <button id="room-leave" class="button button-quiet" type="button">Leave</button>
+          </div>
+        </section>
 
         <nav id="playlist-list" class="playlist-list" aria-label="Your playlists">
           <p class="sidebar-loading">Getting your playlists…</p>
@@ -126,6 +151,36 @@
           <button class="button button-quiet" type="button" data-close-dialog="song-lab-dialog">Close</button>
           <button class="button button-accent" type="submit" id="song-lab-submit">Analyze song</button>
         </div>
+      </form>
+    </dialog>
+
+    <dialog id="room-dialog" class="edit-dialog room-dialog">
+      <form id="room-form" class="dialog-form">
+        <div class="dialog-topline">
+          <span class="eyebrow">Shared listening</span>
+          <button class="dialog-close" type="button" data-close-dialog="room-dialog" aria-label="Close">×</button>
+        </div>
+        <h2>Listen together</h2>
+        <p class="dialog-intro">The host controls playback. Everyone sees the same song, queue, and timing.</p>
+        <div class="room-dialog-grid">
+          <section class="room-form-section">
+            <span class="room-form-label">Create a room</span>
+            <label for="room-name">Room name</label>
+            <input id="room-name" maxlength="60" placeholder="Late-night radio" />
+            <label for="room-display-name">Your name</label>
+            <input id="room-display-name" maxlength="40" placeholder="You" />
+            <button id="room-create-submit" class="button button-accent" type="button">Create room</button>
+          </section>
+          <section class="room-form-section">
+            <span class="room-form-label">Join a room</span>
+            <label for="room-code">Room code</label>
+            <input id="room-code" maxlength="12" autocapitalize="characters" placeholder="ABC123" />
+            <label for="room-join-name">Your name</label>
+            <input id="room-join-name" maxlength="40" placeholder="Guest" />
+            <button id="room-join-submit" class="button button-quiet" type="button">Join room</button>
+          </section>
+        </div>
+        <p id="room-dialog-status" class="room-dialog-status" role="status" aria-live="polite"></p>
       </form>
     </dialog>
 

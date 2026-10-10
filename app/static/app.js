@@ -53,6 +53,372 @@ let peakLevels = [];
 let artThemeRequest = 0;
 let artThemeUrl = null;
 
+const roomState = {
+  roomId: null,
+  code: null,
+  name: null,
+  memberId: null,
+  token: null,
+  isHost: false,
+  socket: null,
+  syncTimer: null,
+  reconnectTimer: null,
+  reconnectAttempts: 0,
+  connected: false,
+  userLeaving: false,
+  previousQueue: null,
+  members: [],
+  queue: [],
+  pendingRequests: [],
+  applyingRemote: false,
+  remoteRequestIds: new Set(),
+};
+
+function roomSocketOpen() {
+  return roomState.socket?.readyState === WebSocket.OPEN;
+}
+
+function sendRoom(message) {
+  if (roomSocketOpen()) roomState.socket.send(JSON.stringify(message));
+}
+
+function setRoomStatus(message, tone = "") {
+  const sidebarStatus = byId("room-sidebar-status");
+  const dialogStatus = byId("room-dialog-status");
+  const connectionState = byId("room-connection-state");
+  if (sidebarStatus) sidebarStatus.textContent = message;
+  if (dialogStatus) dialogStatus.textContent = message;
+  if (connectionState) {
+    connectionState.textContent = message;
+    connectionState.className = `room-connection-state ${tone}`.trim();
+  }
+}
+
+function renderRoomCard() {
+  const card = byId("room-sidebar-card");
+  if (!card) return;
+  card.hidden = !roomState.roomId;
+  if (!roomState.roomId) {
+    setRoomStatus("Start or join a room");
+    return;
+  }
+  byId("room-sidebar-name").textContent = roomState.name || "Listening room";
+  byId("room-sidebar-code").textContent = roomState.code || "—";
+  const count = roomState.members.filter((member) => member.connected !== false).length;
+  byId("room-member-count").textContent = `${count} ${count === 1 ? "listener" : "listeners"}`;
+  renderRoomRequests();
+  setRoomStatus(roomState.connected ? (roomState.isHost ? "Host · live" : "Connected") : "Reconnecting…", roomState.connected ? "is-live" : "is-reconnecting");
+}
+
+function renderRoomRequests() {
+  const requestList = byId("room-request-list");
+  if (!requestList) return;
+  requestList.hidden = !roomState.isHost || !roomState.pendingRequests.length;
+  requestList.innerHTML = roomState.pendingRequests.map((request) => `
+    <div class="room-request">
+      <span><strong>${escapeHtml(request.display_name || "Listener")}</strong> wants to play <em>${escapeHtml(findRoomTrack(request.track_id)?.title || "a song")}</em></span>
+      <span class="room-request-actions">
+        <button class="room-request-button is-approve" type="button" data-action="room-request" data-request-id="${request.request_id}" data-approved="true">Play</button>
+        <button class="room-request-button" type="button" data-action="room-request" data-request-id="${request.request_id}" data-approved="false">×</button>
+      </span>
+    </div>`).join("");
+}
+
+function roomSession() {
+  try {
+    return JSON.parse(localStorage.getItem("ydkmusic-room-session") || "null");
+  } catch {
+    return null;
+  }
+}
+
+function saveRoomSession(payload) {
+  if (!roomState.roomId) roomState.previousQueue = [...state.queue];
+  roomState.roomId = payload.room_id;
+  roomState.code = payload.code;
+  roomState.name = payload.name;
+  roomState.memberId = payload.member_id;
+  roomState.token = payload.token;
+  roomState.isHost = Boolean(payload.is_host);
+  roomState.members = payload.state?.members || [];
+  roomState.queue = payload.state?.queue || [];
+  localStorage.setItem("ydkmusic-room-session", JSON.stringify({
+    room_id: roomState.roomId,
+    code: roomState.code,
+    name: roomState.name,
+    member_id: roomState.memberId,
+    token: roomState.token,
+    is_host: roomState.isHost,
+  }));
+  renderRoomCard();
+}
+
+function clearRoomSession() {
+  localStorage.removeItem("ydkmusic-room-session");
+  roomState.roomId = null;
+  roomState.code = null;
+  roomState.name = null;
+  roomState.memberId = null;
+  roomState.token = null;
+  roomState.isHost = false;
+  roomState.connected = false;
+  roomState.members = [];
+  roomState.queue = [];
+  roomState.pendingRequests = [];
+  state.queue = roomState.previousQueue || JSON.parse(localStorage.getItem("ydkmusic-queue") || "[]");
+  roomState.previousQueue = null;
+  localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
+  renderQueue();
+  renderRoomCard();
+}
+
+function stopRoomHeartbeat() {
+  if (roomState.syncTimer) window.clearInterval(roomState.syncTimer);
+  roomState.syncTimer = null;
+}
+
+function broadcastPlaybackState() {
+  if (!roomState.isHost || !roomSocketOpen() || roomState.applyingRemote) return;
+  sendRoom({
+    type: "sync",
+    track_id: playerTrack?.id ?? null,
+    position: Number(audioEngine.currentTime) || 0,
+    is_playing: Boolean(playerTrack && !audioEngine.paused),
+  });
+}
+
+function startRoomHeartbeat() {
+  stopRoomHeartbeat();
+  if (!roomState.isHost) return;
+  roomState.syncTimer = window.setInterval(broadcastPlaybackState, 2000);
+  broadcastPlaybackState();
+  broadcastQueue();
+}
+
+function broadcastQueue() {
+  if (!roomState.isHost || !roomSocketOpen()) return;
+  sendRoom({ type: "queue", queue: state.queue });
+}
+
+function findRoomTrack(trackId) {
+  const candidates = [
+    ...(state.activePlaylist?.tracks || []),
+    ...(state.likedTracks || []),
+    ...state.homePlaylists.flatMap((playlist) => playlist.tracks || []),
+    ...state.queue,
+    ...roomState.queue,
+  ];
+  return candidates.find((track) => track.id === Number(trackId));
+}
+
+async function waitForRoomMetadata() {
+  if (audioEngine.readyState >= 1) return;
+  await new Promise((resolve) => audioEngine.addEventListener("loadedmetadata", resolve, { once: true }));
+}
+
+async function applyRemotePlayback(message) {
+  if (roomState.isHost || !message || roomState.applyingRemote) return;
+  const elapsed = Math.max(0, (Date.now() - Number(message.server_time || Date.now())) / 1000);
+  const desiredPosition = Math.max(0, Number(message.position) || 0) + (message.is_playing ? elapsed : 0);
+  roomState.applyingRemote = true;
+  try {
+    const remoteTrack = message.track_id ? findRoomTrack(message.track_id) : null;
+    if (message.track_id && (!remoteTrack || !remoteTrack.audio_url)) {
+      setRoomStatus("Waiting for this song…", "is-reconnecting");
+      return;
+    }
+    if (remoteTrack && playerTrack?.id !== remoteTrack.id) {
+      await playTrack(remoteTrack, { remote: true, autoplay: false });
+      await waitForRoomMetadata();
+    }
+    if (!message.track_id) {
+      audioEngine.pause();
+      return;
+    }
+    if (Number.isFinite(desiredPosition) && Math.abs(audioEngine.currentTime - desiredPosition) > 1.5) {
+      audioEngine.currentTime = desiredPosition;
+    }
+    if (message.is_playing && audioEngine.paused) await audioEngine.play();
+    if (!message.is_playing && !audioEngine.paused) audioEngine.pause();
+    setRoomStatus(roomState.isHost ? "Host · live" : "Synced with host", "is-live");
+    updatePlayerDisplay();
+    updateNowPlayingControls();
+  } catch {
+    setRoomStatus("Sync paused — retrying…", "is-reconnecting");
+  } finally {
+    roomState.applyingRemote = false;
+  }
+}
+
+function scheduleRoomReconnect() {
+  if (roomState.userLeaving || !roomState.roomId || roomState.reconnectTimer) return;
+  const delay = Math.min(15000, 800 * (2 ** roomState.reconnectAttempts));
+  roomState.reconnectAttempts += 1;
+  roomState.reconnectTimer = window.setTimeout(() => {
+    roomState.reconnectTimer = null;
+    connectRoomSocket();
+  }, delay);
+  setRoomStatus("Reconnecting…", "is-reconnecting");
+}
+
+function handleRoomMessage(message) {
+  if (!message || typeof message !== "object") return;
+  if (message.type === "room_state") {
+    const serverState = message.state || {};
+    roomState.name = serverState.name || roomState.name;
+    roomState.code = serverState.code || roomState.code;
+    roomState.isHost = serverState.host_id === roomState.memberId;
+    roomState.members = serverState.members || [];
+    roomState.queue = serverState.queue || [];
+    if (!roomState.isHost) {
+      state.queue = [...roomState.queue];
+      localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
+      renderQueue();
+      applyRemotePlayback(serverState);
+    }
+    renderRoomCard();
+    startRoomHeartbeat();
+    return;
+  }
+  if (message.type === "members") {
+    roomState.members = message.members || [];
+    if (message.host_id) roomState.isHost = message.host_id === roomState.memberId;
+    renderRoomCard();
+    startRoomHeartbeat();
+    return;
+  }
+  if (message.type === "sync") {
+    applyRemotePlayback(message);
+    return;
+  }
+  if (message.type === "queue") {
+    roomState.queue = Array.isArray(message.queue) ? message.queue : [];
+    if (!roomState.isHost) {
+      state.queue = [...roomState.queue];
+      localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
+      renderQueue();
+    }
+    return;
+  }
+  if (message.type === "play_request") {
+    if (roomState.isHost) {
+      roomState.pendingRequests = [...roomState.pendingRequests.filter((request) => request.request_id !== message.request_id), message];
+      renderRoomCard();
+      showToast(`${message.display_name || "A listener"} requested “${findRoomTrack(message.track_id)?.title || "this song"}”.`);
+    }
+    return;
+  }
+  if (message.type === "play_request_result") {
+    if (message.member_id && message.member_id !== roomState.memberId) return;
+    showToast(message.approved ? "The host approved your request." : "The host declined your request.", !message.approved);
+    return;
+  }
+  if (message.type === "error") showToast(message.message || "Room error.", true);
+}
+
+async function connectRoomSocket() {
+  if (!roomState.roomId || !roomState.memberId || !roomState.token) return;
+  try {
+    const roomCheck = await fetch(`/api/rooms/${encodeURIComponent(roomState.roomId)}`);
+    if (roomCheck.status === 404) {
+      clearRoomSession();
+      setRoomStatus("This room has expired.", "is-error");
+      return;
+    }
+  } catch {
+    // Let the WebSocket retry path handle temporary network failures.
+  }
+  if (roomState.socket) roomState.socket.close();
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const params = new URLSearchParams({ member_id: roomState.memberId, token: roomState.token });
+  const socket = new WebSocket(`${protocol}//${window.location.host}/api/rooms/${encodeURIComponent(roomState.roomId)}/ws?${params}`);
+  roomState.socket = socket;
+  setRoomStatus("Connecting…", "is-reconnecting");
+  socket.addEventListener("open", () => {
+    roomState.connected = true;
+    roomState.reconnectAttempts = 0;
+    renderRoomCard();
+    sendRoom({ type: "ping", client_time: Date.now() });
+    startRoomHeartbeat();
+  });
+  socket.addEventListener("message", (event) => {
+    try {
+      handleRoomMessage(JSON.parse(event.data));
+    } catch {
+      showToast("Received an invalid room update.", true);
+    }
+  });
+  socket.addEventListener("close", () => {
+    if (roomState.socket === socket) {
+      roomState.connected = false;
+      stopRoomHeartbeat();
+      renderRoomCard();
+      scheduleRoomReconnect();
+    }
+  });
+  socket.addEventListener("error", () => setRoomStatus("Connection interrupted", "is-reconnecting"));
+}
+
+async function createRoom() {
+  const name = byId("room-name").value.trim() || "Listening room";
+  const displayName = byId("room-display-name").value.trim() || "Host";
+  setRoomStatus("Creating room…", "is-reconnecting");
+  try {
+    const payload = await api("/api/rooms", { method: "POST", body: JSON.stringify({ name, display_name: displayName }) });
+    roomState.userLeaving = false;
+    saveRoomSession(payload);
+    byId("room-dialog").close();
+    connectRoomSocket();
+    showToast(`Room ${payload.code} is ready. Share the invite to listen together.`);
+  } catch (error) {
+    setRoomStatus(error.message, "is-error");
+  }
+}
+
+async function joinRoom() {
+  const code = byId("room-code").value.trim().toUpperCase();
+  const displayName = byId("room-join-name").value.trim() || "Guest";
+  if (!code) return setRoomStatus("Enter a room code.", "is-error");
+  setRoomStatus("Joining room…", "is-reconnecting");
+  try {
+    const payload = await api("/api/rooms/join", { method: "POST", body: JSON.stringify({ code, display_name: displayName }) });
+    roomState.userLeaving = false;
+    saveRoomSession(payload);
+    byId("room-dialog").close();
+    connectRoomSocket();
+    showToast(`Joined ${payload.name}.`);
+  } catch (error) {
+    setRoomStatus(error.message, "is-error");
+  }
+}
+
+function leaveRoom() {
+  roomState.userLeaving = true;
+  stopRoomHeartbeat();
+  if (roomState.reconnectTimer) window.clearTimeout(roomState.reconnectTimer);
+  roomState.reconnectTimer = null;
+  sendRoom({ type: "leave" });
+  roomState.socket?.close();
+  clearRoomSession();
+  showToast("You left the listening room.");
+}
+
+function openRoomDialog() {
+  const session = roomSession();
+  if (session && !roomState.roomId) {
+    saveRoomSession({ ...session, state: { members: [], queue: [] } });
+    connectRoomSocket();
+  }
+  byId("room-dialog").showModal();
+}
+
+function maybeJoinRoomFromUrl() {
+  const code = new URLSearchParams(window.location.search).get("room");
+  if (!code || roomState.roomId) return;
+  byId("room-code").value = code.toUpperCase();
+  byId("room-dialog").showModal();
+}
+
 function resetViewScroll() {
   const scrollToTop = () => {
     window.scrollTo(0, 0);
@@ -760,12 +1126,14 @@ function openQueueSaveDialog(index) {
 }
 
 function addToQueue(track, playNext = false) {
+  if (roomState.roomId && !roomState.isHost) return showToast("Only the host can change the shared queue.", true);
   if (!track?.audio_url) return showToast("This song does not have an uploaded audio file.", true);
   if (state.queue.some((queued) => queued.id === track.id)) return showToast("That song is already in the queue.", true);
   if (playNext) state.queue.unshift(track);
   else state.queue.push(track);
   localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
   renderQueue();
+  broadcastQueue();
   showToast(playNext ? "Added to play next." : "Added to queue.");
 }
 
@@ -780,6 +1148,7 @@ function buildSmartQueue() {
   state.queue.push(...ranked.slice(0, 8));
   localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
   renderQueue();
+  broadcastQueue();
   showToast("Smart flow added to your queue.");
 }
 
@@ -899,7 +1268,12 @@ function updatePlayerDisplay() {
   if (!byId("now-playing").hidden && !state.nowPlayingClosing) updateNowPlayingDisplay();
 }
 
-async function playTrack(track) {
+async function playTrack(track, options = {}) {
+  if (roomState.roomId && !roomState.isHost && !options.remote) {
+    if (track?.id) sendRoom({ type: "play_request", track_id: track.id });
+    showToast("The host controls playback. Your request was sent.");
+    return;
+  }
   setupAudioAnalyzer();
   if (audioContext?.state === "suspended") await audioContext.resume();
 
@@ -909,6 +1283,7 @@ async function playTrack(track) {
   }
 
   if (playerTrack?.id === track.id) {
+    if (options.remote) return;
     if (audioEngine.paused) {
       await audioEngine.play();
     } else {
@@ -937,14 +1312,17 @@ async function playTrack(track) {
   updatePlayerDisplay();
   analyzeAudioLyricsOffset(track);
 
-  try {
-    await audioEngine.play();
-  } catch {
-    showToast("The audio file could not be played.", true);
+  if (options.autoplay !== false) {
+    try {
+      await audioEngine.play();
+    } catch {
+      showToast("The audio file could not be played.", true);
+    }
   }
 
   updatePlayerDisplay();
   renderPlaylist();
+  broadcastPlaybackState();
 }
 
 function playbackTracks() {
@@ -954,9 +1332,11 @@ function playbackTracks() {
 
 async function playNextTrack() {
   if (state.queue.length) {
+    if (roomState.roomId && !roomState.isHost) return;
     const nextQueued = state.queue.shift();
     localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
     renderQueue();
+    broadcastQueue();
     await playTrack(nextQueued);
     return;
   }
@@ -1506,12 +1886,17 @@ document.addEventListener("click", async (event) => {
 
   const queueItem = event.target.closest(".queue-item");
   if (queueItem && !event.target.closest("button, input, a")) {
+    if (roomState.roomId && !roomState.isHost) {
+      showToast("Only the host can change the shared queue.", true);
+      return;
+    }
     const index = Number(queueItem.dataset.queueIndex);
     const track = state.queue[index];
     if (track) {
       state.queue.splice(index, 1);
       localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
       renderQueue();
+      broadcastQueue();
       await playTrack(track);
     }
     return;
@@ -1548,23 +1933,43 @@ document.addEventListener("click", async (event) => {
       await playTrack(track);
     }
   }
+  if (action === "room-request") {
+    if (!roomState.isHost) return;
+    const requestIndex = roomState.pendingRequests.findIndex((request) => request.request_id === actionButton.dataset.requestId);
+    const request = roomState.pendingRequests[requestIndex];
+    if (!request) return;
+    const approved = actionButton.dataset.approved === "true";
+    roomState.pendingRequests.splice(requestIndex, 1);
+    renderRoomCard();
+    sendRoom({ type: "play_request_result", request_id: request.request_id, member_id: request.member_id, approved });
+    if (approved) {
+      const track = findRoomTrack(request.track_id);
+      if (track) await playTrack(track);
+      else showToast("That song is not available in this library.", true);
+    }
+    return;
+  }
   if (action === "add-queue" || action === "play-next") {
     const track = [...(state.activePlaylist?.tracks || []), ...(state.likedTracks || [])]
       .find((item) => item.id === Number(actionButton.dataset.trackId));
     if (track) addToQueue(track, action === "play-next");
   }
   if (action === "remove-queue") {
+    if (roomState.roomId && !roomState.isHost) return showToast("Only the host can change the shared queue.", true);
     state.queue.splice(Number(actionButton.dataset.queueIndex), 1);
     localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
     renderQueue();
+    broadcastQueue();
   }
   if (action === "play-queued-track") {
+    if (roomState.roomId && !roomState.isHost) return showToast("Only the host can change the shared queue.", true);
     const index = Number(actionButton.dataset.queueIndex);
     const track = state.queue[index];
     if (track) {
       state.queue.splice(index, 1);
       localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
       renderQueue();
+      broadcastQueue();
       await playTrack(track);
     }
   }
@@ -1584,17 +1989,21 @@ document.addEventListener("click", async (event) => {
     }
   }
   if (action === "clear-queue") {
+    if (roomState.roomId && !roomState.isHost) return showToast("Only the host can change the shared queue.", true);
     state.queue = [];
     localStorage.removeItem("ydkmusic-queue");
     renderQueue();
+    broadcastQueue();
     showToast("Queue cleared.");
   }
   if (action === "smart-queue") buildSmartQueue();
   if (action === "remove-selected-queue") {
+    if (roomState.roomId && !roomState.isHost) return showToast("Only the host can change the shared queue.", true);
     const selected = new Set([...document.querySelectorAll("[data-queue-select]:checked")].map((input) => Number(input.dataset.queueSelect)));
     state.queue = state.queue.filter((_, index) => !selected.has(index));
     localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
     renderQueue();
+    broadcastQueue();
     showToast(selected.size ? `${selected.size} songs removed from queue.` : "Select songs to remove first.");
   }
   if (action === "select-visible-tracks") {
@@ -1951,12 +2360,17 @@ document.addEventListener("dragover", (event) => {
 document.addEventListener("drop", (event) => {
   const target = event.target.closest(".queue-item");
   if (!target || state.draggingQueueIndex === null) return;
+  if (roomState.roomId && !roomState.isHost) {
+    showToast("Only the host can change the shared queue.", true);
+    return;
+  }
   event.preventDefault();
   const targetIndex = Number(target.dataset.queueIndex);
   const [moved] = state.queue.splice(state.draggingQueueIndex, 1);
   state.queue.splice(targetIndex, 0, moved);
   localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
   renderQueue();
+  broadcastQueue();
 });
 
 const savedVolume = Number(localStorage.getItem("sideb-volume"));
@@ -1998,6 +2412,7 @@ audioEngine.addEventListener("play", () => {
   updateMediaSessionState();
   updatePlayerDisplay();
   renderPlaylist();
+  broadcastPlaybackState();
 });
 
 audioEngine.addEventListener("pause", () => {
@@ -2005,6 +2420,7 @@ audioEngine.addEventListener("pause", () => {
   updateMediaSessionState();
   updatePlayerDisplay();
   renderPlaylist();
+  broadcastPlaybackState();
 });
 
 audioEngine.addEventListener("ended", () => {
@@ -2044,6 +2460,7 @@ byId("player-repeat").addEventListener("click", () => {
 byId("player-progress").addEventListener("input", (event) => {
   audioEngine.currentTime = Number(event.target.value);
   updatePlayerDisplay();
+  broadcastPlaybackState();
 });
 
 byId("player-volume").addEventListener("input", (event) => {
@@ -2073,6 +2490,7 @@ byId("player-close").addEventListener("click", () => {
   audioEngine.load();
   playerTrack = null;
   byId("player-bar").hidden = true;
+  broadcastPlaybackState();
   renderPlaylist();
 });
 
@@ -2225,6 +2643,7 @@ byId("now-playing-toggle").addEventListener("click", async () => {
 byId("now-playing-progress").addEventListener("input", (event) => {
   audioEngine.currentTime = Number(event.target.value);
   updateNowPlayingControls();
+  broadcastPlaybackState();
 });
 
 byId("now-playing-shuffle").addEventListener("click", () => {
@@ -2395,6 +2814,20 @@ byId("sidebar-toggle").addEventListener("click", () => {
   setSidebarCollapsed(!document.body.classList.contains("sidebar-collapsed"));
 });
 byId("sidebar-reopen").addEventListener("click", () => setSidebarCollapsed(false));
+byId("room-button").addEventListener("click", openRoomDialog);
+byId("room-create-submit").addEventListener("click", createRoom);
+byId("room-join-submit").addEventListener("click", joinRoom);
+byId("room-leave").addEventListener("click", leaveRoom);
+byId("room-copy-invite").addEventListener("click", async () => {
+  if (!roomState.code) return;
+  const invite = `${window.location.origin}/?room=${encodeURIComponent(roomState.code)}`;
+  try {
+    await navigator.clipboard.writeText(invite);
+    showToast("Room invite copied.");
+  } catch {
+    window.prompt("Copy this room invite:", invite);
+  }
+});
 byId("importYtBtn").addEventListener("click", importYouTubeTrack);
 byId("searchYtBtn").addEventListener("click", searchAndImportYouTubeTrack);
 byId("ytUrlInput").addEventListener("keydown", (event) => {
@@ -2402,6 +2835,13 @@ byId("ytUrlInput").addEventListener("keydown", (event) => {
 });
 setSidebarCollapsed(savedSidebarState);
 loadPlaylists(null);
+const rememberedRoom = roomSession();
+if (rememberedRoom?.room_id && rememberedRoom?.member_id && rememberedRoom?.token) {
+  saveRoomSession({ ...rememberedRoom, state: { members: [], queue: [] } });
+  connectRoomSocket();
+} else {
+  maybeJoinRoomFromUrl();
+}
 
 
 let draggedTrackId = null;
