@@ -81,3 +81,12 @@ class PlaylistSummary(BaseModel):
 class PlaylistList(BaseModel):
     items: list[PlaylistSummary]
     total: int
+
+class YouTubeDownloadRequest(BaseModel):
+    url: str
+    playlist_id: int = Field(gt=0)
+
+
+class YouTubeSearchRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=200)
+    playlist_id: int = Field(gt=0)

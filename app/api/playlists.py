@@ -9,6 +9,7 @@ import json
 import os
 import re
 import ssl
+import yt_dlp
 from difflib import SequenceMatcher
 from html import unescape
 
@@ -40,6 +41,8 @@ from ..schemas import (
     TrackCreate,
     TrackRead,
     TrackUpdate,
+    YouTubeDownloadRequest,
+    YouTubeSearchRequest,
 )
 
 
@@ -188,6 +191,20 @@ def normalized_text(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.casefold())
 
 
+def catalog_title(value: str, artist: str | None = None) -> str:
+    cleaned = re.sub(
+        r"\s*(?:\([^)]*(?:official|video|audio|lyrics|visualizer)[^)]*\)|\[[^\]]*(?:official|video|audio|lyrics|visualizer)[^\]]*\])\s*$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    ).strip()
+    if artist and " - " in cleaned:
+        prefix, remainder = cleaned.split(" - ", 1)
+        if normalized_text(prefix) == normalized_text(artist):
+            cleaned = remainder.strip()
+    return cleaned
+
+
 def fuzzy_artist_match(candidates: list, requested_artist: str) -> dict | None:
     target = normalized_text(requested_artist)
     best = None
@@ -242,6 +259,7 @@ def lookup_cover_art(title: str, artist: str | None) -> dict:
             return {
                 "cover_url": artwork,
                 "genre": best.get("primaryGenreName"),
+                "album": best.get("collectionName"),
             }
     except Exception:
         pass
@@ -335,6 +353,32 @@ def remove_cover(cover_path: str | None) -> None:
     old_path = cover_dir / Path(cover_path).name
     if old_path.exists():
         old_path.unlink()
+
+
+def save_remote_cover(url: str | None) -> dict | None:
+    if not url:
+        return None
+    try:
+        request = Request(url, headers={"User-Agent": "Side B/1.0"})
+        with urlopen(request, timeout=10, context=PUBLIC_LOOKUP_SSL) as response:
+            content_type = (response.headers.get_content_type() or "").lower()
+            extension = ALLOWED_COVER_TYPES.get(content_type)
+            if not extension:
+                extension = ".jpg"
+                content_type = "image/jpeg"
+            image_data = response.read(MAX_COVER_SIZE + 1)
+        if len(image_data) > MAX_COVER_SIZE:
+            return None
+        filename = f"{uuid4().hex}{extension}"
+        saved_path = cover_dir / filename
+        saved_path.write_bytes(image_data)
+        return {
+            "filename": filename,
+            "path": str(saved_path.relative_to(UPLOAD_DIR)),
+            "content_type": content_type,
+        }
+    except Exception:
+        return None
 
 
 @router.post("/tracks/metadata")
@@ -820,16 +864,24 @@ async def upload_track(
     ensure_unique_track(playlist_id, final_title, final_artist, db)
     embedded_cover = extract_embedded_cover(saved_path)
     uploaded_cover = await save_cover_upload(cover) if cover else None
-    selected_cover = uploaded_cover or embedded_cover
+    catalog = lookup_cover_art(catalog_title(final_title, final_artist), final_artist)
+    catalog_cover = (
+        save_remote_cover(catalog.get("cover_url"))
+        if not uploaded_cover and not embedded_cover and catalog.get("cover_url")
+        else None
+    )
+    selected_cover = uploaded_cover or embedded_cover or catalog_cover
+    final_album = (album or imported_album or catalog.get("album"))
+    final_genre = imported_genre or catalog.get("genre")
 
     track = Track(
         playlist_id=playlist_id,
         title=final_title,
         artist=final_artist,
-        album=(album or imported_album).strip() if (album or imported_album) else None,
+        album=final_album.strip() if final_album else None,
         position=position,
         duration_seconds=duration_seconds or imported_duration,
-        genre=imported_genre,
+        genre=final_genre,
         audio_filename=file.filename,
         audio_path=str(saved_path.relative_to(UPLOAD_DIR.parent)),
         audio_content_type=file.content_type,
@@ -902,15 +954,21 @@ def mark_track_played(track_id: int, db: DbSession) -> Track:
 @router.post("/tracks/{track_id}/catalog-metadata", response_model=TrackRead)
 def enrich_track_metadata(track_id: int, db: DbSession) -> Track:
     track = get_track_or_404(track_id, db)
-    query = urlencode({"term": f"{track.artist} {track.title}", "entity": "song", "limit": 1})
     try:
-        payload = fetch_json(f"https://itunes.apple.com/search?{query}")
-        result = (payload.get("results") or [None])[0] or {}
-        genre = str(result.get("primaryGenreName") or "").strip()
+        catalog = lookup_cover_art(catalog_title(track.title, track.artist), track.artist)
+        genre = str(catalog.get("genre") or "").strip()
         if genre and not track.genre:
             track.genre = genre
-            db.commit()
-            db.refresh(track)
+        if not track.album and catalog.get("album"):
+            track.album = catalog["album"]
+        if not track.cover_path and catalog.get("cover_url"):
+            cover = save_remote_cover(catalog["cover_url"])
+            if cover:
+                track.cover_filename = cover["filename"]
+                track.cover_path = cover["path"]
+                track.cover_content_type = cover["content_type"]
+        db.commit()
+        db.refresh(track)
     except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, ValueError):
         pass
     return track
@@ -940,7 +998,7 @@ def listening_stats(db: DbSession) -> dict:
 
 def lyric_candidates(value: str) -> list[str]:
     cleaned = " ".join(value.replace("_", " ").split()).strip()
-    candidates = [cleaned]
+    candidates = [cleaned] if cleaned else []
     simplified = cleaned.split("(", 1)[0].strip()
     simplified = simplified.split("[", 1)[0].strip()
     if simplified and simplified not in candidates:
@@ -950,6 +1008,18 @@ def lyric_candidates(value: str) -> list[str]:
             variant = simplified.lower().replace(marker.lower(), "").strip()
             if variant and variant not in candidates:
                 candidates.append(variant)
+    return candidates
+
+
+def lyric_artist_candidates(value: str) -> list[str]:
+    candidates = lyric_candidates(value)
+    for marker in (" official", " official music", " music channel", " topic"):
+        for candidate in list(candidates):
+            lowered = candidate.casefold()
+            if lowered.endswith(marker):
+                trimmed = candidate[: -len(marker)].strip()
+                if trimmed and trimmed not in candidates:
+                    candidates.append(trimmed)
     return candidates
 
 
@@ -981,8 +1051,12 @@ def fetch_lyrics_ovh(artist: str, title: str) -> str | None:
 @router.get("/tracks/{track_id}/lyrics")
 def fetch_track_lyrics(track_id: int, db: DbSession) -> dict[str, str | None]:
     track = get_track_or_404(track_id, db)
-    artists = lyric_candidates(track.artist)
+    artists = lyric_artist_candidates(track.artist)
     titles = lyric_candidates(track.title)
+    titles.extend(
+        candidate for candidate in lyric_candidates(catalog_title(track.title, track.artist))
+        if candidate not in titles
+    )
     providers = (("LRCLIB", fetch_lrclib), ("Lyrics.ovh", fetch_lyrics_ovh))
 
     for artist in artists:
@@ -1095,3 +1169,97 @@ def reorder_liked_tracks(
 
     db.commit()
     return {"message": "Liked songs order saved."}
+
+
+@router.post("/yt-download", response_model=TrackRead, status_code=status.HTTP_201_CREATED)
+def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
+    playlist = get_playlist_or_404(req.playlist_id, db)
+
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'noplaylist': True,
+        'socket_timeout': 30,
+        'retries': 2,
+        'fragment_retries': 2,
+        'outtmpl': str(UPLOAD_DIR / f"{uuid4().hex}.%(ext)s"),
+        'ffmpeg_location': str(UPLOAD_DIR.parent.parent / "ffmpeg.exe"),
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+        'quiet': True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(req.url, download=True)
+            title = info.get("title", "Unknown Track")
+            filename = ydl.prepare_filename(info)
+            audio_filename = os.path.splitext(os.path.basename(filename))[0] + ".mp3"
+
+        downloaded_path = UPLOAD_DIR / audio_filename
+        if not downloaded_path.exists():
+            raise HTTPException(status_code=502, detail="The audio download did not produce a file.")
+
+        metadata = read_audio_metadata(downloaded_path)
+        final_title = (metadata.get("title") or title).strip()
+        final_artist = (metadata.get("artist") or info.get("artist") or info.get("uploader") or "Unknown artist").strip()
+        catalog = lookup_cover_art(catalog_title(final_title, final_artist), final_artist)
+        embedded_cover = extract_embedded_cover(downloaded_path)
+        remote_cover = embedded_cover
+        if not remote_cover and catalog.get("cover_url"):
+            remote_cover = save_remote_cover(catalog["cover_url"])
+        ensure_unique_track(playlist.id, final_title, final_artist, db)
+
+        track = Track(
+            playlist_id=playlist.id,
+            title=final_title,
+            artist=final_artist,
+            album=metadata.get("album") or info.get("album") or info.get("playlist_title") or catalog.get("album"),
+            genre=metadata.get("genre") or info.get("genre") or (info.get("categories") or [None])[0] or catalog.get("genre"),
+            duration_seconds=metadata.get("duration_seconds") or info.get("duration"),
+            position=len(playlist.tracks),
+            audio_filename=audio_filename,
+            audio_path=str(downloaded_path.relative_to(UPLOAD_DIR.parent)),
+            audio_content_type="audio/mpeg",
+            cover_filename=remote_cover["filename"] if remote_cover else None,
+            cover_path=remote_cover["path"] if remote_cover else None,
+            cover_content_type=remote_cover["content_type"] if remote_cover else None,
+        )
+        db.add(track)
+        db.commit()
+        db.refresh(track)
+        return track
+    except HTTPException:
+        raise
+    except Exception as e:
+        if 'downloaded_path' in locals() and downloaded_path.exists():
+            downloaded_path.unlink()
+        raise HTTPException(status_code=400, detail=f"Failed to fetch audio: {e}") from e
+
+
+@router.post("/yt-search-import", response_model=TrackRead, status_code=status.HTTP_201_CREATED)
+def search_youtube_audio(req: YouTubeSearchRequest, db: DbSession) -> Track:
+    try:
+        with yt_dlp.YoutubeDL({
+            "quiet": True,
+            "noplaylist": True,
+            "extract_flat": True,
+            "socket_timeout": 20,
+        }) as ydl:
+            result = ydl.extract_info(f"ytsearch1:{req.query}", download=False)
+        entry = (result.get("entries") or [None])[0] if result else None
+        url = (entry or {}).get("webpage_url") or ((entry or {}).get("original_url"))
+        if not url and entry and entry.get("id"):
+            url = f"https://www.youtube.com/watch?v={entry['id']}"
+        if not url:
+            raise HTTPException(status_code=404, detail="No YouTube result matched that search.")
+        return download_youtube_audio(
+            YouTubeDownloadRequest(url=url, playlist_id=req.playlist_id),
+            db,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"YouTube search failed: {e}") from e

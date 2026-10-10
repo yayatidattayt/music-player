@@ -432,6 +432,65 @@ async function api(path, options = {}) {
   return data;
 }
 
+async function importYouTubeTrack() {
+  const input = byId("ytUrlInput");
+  const button = byId("importYtBtn");
+  const url = input.value.trim();
+
+  if (!state.activeId) {
+    showToast("Open a playlist before importing a track.", true);
+    return;
+  }
+  if (!url) {
+    showToast("Paste a YouTube link first.", true);
+    input.focus();
+    return;
+  }
+
+  button.disabled = true;
+  button.querySelector("span").textContent = "Fetching…";
+  try {
+    await api("/api/yt-download", {
+      method: "POST",
+      body: JSON.stringify({ url, playlist_id: state.activeId }),
+    });
+    input.value = "";
+    byId("yt-import-status").textContent = "Added ✓";
+    showToast("Track imported to this playlist.");
+    await loadPlaylists(state.activeId);
+  } catch (error) {
+    showToast(error.message || "Could not import that track.", true);
+  } finally {
+    button.disabled = false;
+    button.querySelector("span").textContent = "Import Track";
+  }
+}
+
+async function searchAndImportYouTubeTrack() {
+  const input = byId("ytUrlInput");
+  const button = byId("searchYtBtn");
+  const query = input.value.trim();
+  if (!state.activeId) return showToast("Open a playlist before importing a track.", true);
+  if (!query) return showToast("Type a song title and artist first.", true);
+  button.disabled = true;
+  byId("yt-import-status").textContent = "Searching…";
+  try {
+    await api("/api/yt-search-import", {
+      method: "POST",
+      body: JSON.stringify({ query, playlist_id: state.activeId }),
+    });
+    input.value = "";
+    byId("yt-import-status").textContent = "Added ✓";
+    showToast("Song found and added to this playlist.");
+    await loadPlaylists(state.activeId);
+  } catch (error) {
+    byId("yt-import-status").textContent = "Could not add";
+    showToast(error.message || "Could not find that song.", true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function setConnection(online) {
   connectionLabel.textContent = online ? "Library is up to date" : "Can't reach the library";
   statusLight.classList.toggle("is-online", online);
@@ -1114,10 +1173,15 @@ function renderMoodGroups(tracks) {
 function lyricOfTheDay(tracks) {
   const candidates = tracks.filter((track) => String(track.lyrics || "").trim());
   if (!candidates.length) return null;
-  const today = new Date().toISOString().slice(0, 10);
-  const seed = [...today].reduce((total, character) => total * 31 + character.charCodeAt(0), 7);
+  // Use a 24-hour epoch bucket so the selection remains stable across reloads
+  // and rotates exactly once every 24 hours.
+  const dayBucket = Math.floor(Date.now() / 86400000);
+  const seed = dayBucket * 31 + 7;
   const track = candidates[Math.abs(seed + state.lyricRefresh) % candidates.length];
-  const lines = track.lyrics.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const lines = track.lyrics
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]\s*/, "").trim())
+    .filter(Boolean);
   const repeated = lines.findIndex((line, index) => lines.slice(index + 1).some((other) => other.toLowerCase() === line.toLowerCase()));
   const start = repeated >= 0 ? repeated : Math.max(0, Math.floor(lines.length / 2) - 1);
   return { track, excerpt: lines.slice(start, start + 4) };
@@ -2328,6 +2392,11 @@ byId("sidebar-toggle").addEventListener("click", () => {
   setSidebarCollapsed(!document.body.classList.contains("sidebar-collapsed"));
 });
 byId("sidebar-reopen").addEventListener("click", () => setSidebarCollapsed(false));
+byId("importYtBtn").addEventListener("click", importYouTubeTrack);
+byId("searchYtBtn").addEventListener("click", searchAndImportYouTubeTrack);
+byId("ytUrlInput").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") importYouTubeTrack();
+});
 setSidebarCollapsed(savedSidebarState);
 loadPlaylists(null);
 

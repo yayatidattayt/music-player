@@ -3753,3 +3753,134 @@ body.is-audio-playing .now-playing-main-control {
     flex-wrap: wrap;
   }
 }
+
+
+/* YouTube Fetcher Component Styling */
+.yt-fetch-card {
+  display: grid;
+  gap: 12px;
+  background: linear-gradient(135deg, rgba(255,255,255,.075), rgba(255,255,255,.035));
+  border: 1px solid rgba(255,255,255,.12);
+  padding: 14px;
+  border-radius: 16px;
+  margin: 4px 0 20px;
+  box-shadow: inset 0 1px rgba(255,255,255,.05), 0 10px 28px rgba(0,0,0,.12);
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+
+.yt-fetch-card:focus-within {
+  border-color: rgba(197,215,123,.45);
+  box-shadow: inset 0 1px rgba(255,255,255,.07), 0 12px 30px rgba(0,0,0,.2), 0 0 0 3px rgba(197,215,123,.07);
+}
+
+.yt-fetch-heading,
+.yt-fetch-row {
+  display: flex;
+  align-items: center;
+}
+
+.yt-fetch-heading { gap: 10px; }
+.yt-fetch-heading strong,
+.yt-fetch-heading span:last-child { display: block; }
+.yt-fetch-heading strong { color: rgba(255,255,255,.92); font-size: .86rem; }
+.yt-fetch-heading span:last-child { margin-top: 2px; color: rgba(255,255,255,.48); font-size: .72rem; }
+.yt-icon-wrap {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 10px;
+  background: rgba(255,0,0,.12);
+}
+
+.yt-icon {
+  fill: #ff0000;
+  flex-shrink: 0;
+  opacity: .92;
+}
+
+.yt-fetch-row { gap: 8px; }
+
+.yt-fetch-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.yt-search-btn {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: rgba(255,255,255,.55);
+  font: inherit;
+  font-size: .72rem;
+  cursor: pointer;
+}
+
+.yt-search-btn:hover { color: var(--art-accent, #c5d77b); }
+
+.yt-import-status {
+  min-height: 1em;
+  color: #c5d77b;
+  font-size: .72rem;
+  font-weight: 600;
+}
+
+#ytUrlInput {
+  width: 100%;
+  min-width: 0;
+  background: rgba(0,0,0,.18);
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 10px;
+  padding: 10px 12px;
+  outline: none;
+  color: #ffffff;
+  font-size: .82rem;
+  font-family: inherit;
+  transition: border-color .2s ease, background .2s ease;
+}
+
+#ytUrlInput:focus {
+  border-color: rgba(197,215,123,.5);
+  background: rgba(0,0,0,.28);
+}
+
+#ytUrlInput::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.yt-fetch-btn {
+  background: #c5d77b;
+  color: #171916;
+  font-weight: 600;
+  font-size: .78rem;
+  border: none;
+  padding: 10px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color .2s ease, transform .1s ease, box-shadow .2s ease;
+}
+
+.yt-fetch-btn:hover {
+  background: #d6e68f;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(197,215,123,.16);
+}
+
+.yt-fetch-btn:active {
+  transform: translateY(0);
+}
+
+.yt-fetch-btn:disabled {
+  background: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.5);
+  cursor: not-allowed;
+  transform: none;
+}
+
+@media (max-width: 520px) {
+  .yt-fetch-row { align-items: stretch; flex-direction: column; }
+  .yt-fetch-btn { width: 100%; }
+}
