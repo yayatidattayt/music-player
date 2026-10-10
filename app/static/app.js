@@ -450,9 +450,12 @@ async function importYouTubeTrack() {
   button.disabled = true;
   button.querySelector("span").textContent = "Fetching…";
   try {
-    await api("/api/yt-download", {
+    const looksLikeUrl = /^https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\//i.test(url);
+    await api(looksLikeUrl ? "/api/yt-download" : "/api/yt-search-import", {
       method: "POST",
-      body: JSON.stringify({ url, playlist_id: state.activeId }),
+      body: JSON.stringify(looksLikeUrl
+        ? { url, playlist_id: state.activeId }
+        : { query: url, playlist_id: state.activeId }),
     });
     input.value = "";
     byId("yt-import-status").textContent = "Added ✓";

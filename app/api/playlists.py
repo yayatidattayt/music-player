@@ -205,6 +205,24 @@ def catalog_title(value: str, artist: str | None = None) -> str:
     return cleaned
 
 
+def clean_imported_title(value: str, artist: str | None = None) -> str:
+    cleaned = catalog_title(value, artist)
+    cleaned = re.sub(r"\s*\([^)]*\)\s*$", "", cleaned)
+    cleaned = re.sub(r"\s*\[[^\]]*\]\s*$", "", cleaned)
+    cleaned = catalog_title(cleaned, artist)
+    if artist and " - " in cleaned:
+        prefix, remainder = cleaned.split(" - ", 1)
+        if normalized_text(prefix) == normalized_text(artist):
+            cleaned = remainder.strip()
+    cleaned = re.sub(
+        r"\s*(?:[-|·:]\s*)?(?:official\s+)?(?:audio|song|video|music\s+video|lyrics?|lyric\s+video|visualizer|visualiser|performance|remaster(?:ed)?|hd|4k)\s*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip(" -|·:")
+    return cleaned or value.strip()
+
+
 def fuzzy_artist_match(candidates: list, requested_artist: str) -> dict | None:
     target = normalized_text(requested_artist)
     best = None
@@ -859,7 +877,7 @@ async def upload_track(
     imported_album = metadata.get("album")
     imported_duration = metadata.get("duration_seconds")
     imported_genre = metadata.get("genre")
-    final_title = (title or imported_title).strip()
+    final_title = clean_imported_title(title or imported_title, artist or imported_artist)
     final_artist = (artist or imported_artist).strip()
     ensure_unique_track(playlist_id, final_title, final_artist, db)
     embedded_cover = extract_embedded_cover(saved_path)
@@ -1181,6 +1199,7 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
         'socket_timeout': 30,
         'retries': 2,
         'fragment_retries': 2,
+        'noprogress': True,
         'outtmpl': str(UPLOAD_DIR / f"{uuid4().hex}.%(ext)s"),
         'ffmpeg_location': str(UPLOAD_DIR.parent.parent / "ffmpeg.exe"),
         'postprocessors': [{
@@ -1203,7 +1222,10 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
             raise HTTPException(status_code=502, detail="The audio download did not produce a file.")
 
         metadata = read_audio_metadata(downloaded_path)
-        final_title = (metadata.get("title") or title).strip()
+        final_title = clean_imported_title(
+            metadata.get("title") or title,
+            metadata.get("artist") or info.get("artist") or info.get("uploader"),
+        )
         final_artist = (metadata.get("artist") or info.get("artist") or info.get("uploader") or "Unknown artist").strip()
         catalog = lookup_cover_art(catalog_title(final_title, final_artist), final_artist)
         embedded_cover = extract_embedded_cover(downloaded_path)
