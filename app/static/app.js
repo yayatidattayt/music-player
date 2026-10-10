@@ -1055,12 +1055,19 @@ function syncLyrics() {
     const visibleBottom = view.scrollTop + view.clientHeight * 0.8;
     if (lineTop < visibleTop || lineBottom > visibleBottom) {
       const start = view.scrollTop;
-      const target = Math.max(0, lineTop - view.clientHeight * 0.42);
+      const centeredTarget = Math.max(0, lineTop - view.clientHeight * 0.46);
+      // Keep each lyric transition gentle. A fast line change should not pull
+      // the whole panel across the viewport in one animation frame.
+      const maxStep = Math.max(36, view.clientHeight * 0.24);
+      const target = Math.max(
+        0,
+        start + Math.max(-maxStep, Math.min(maxStep, centeredTarget - start)),
+      );
       const distance = target - start;
       if (Math.abs(distance) > 2) {
         if (state.lyricScrollFrame) cancelAnimationFrame(state.lyricScrollFrame);
         const startedAt = performance.now();
-        const duration = 520;
+        const duration = 620;
         const animateScroll = (now) => {
           const progress = Math.min(1, (now - startedAt) / duration);
           const eased = progress < .5
