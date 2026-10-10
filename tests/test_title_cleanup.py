@@ -22,6 +22,24 @@ class ImportedTitleCleanupTests(unittest.TestCase):
             "Love Story - Live",
         )
 
+    def test_removes_unwrapped_official_audio_suffix(self):
+        self.assertEqual(
+            clean_imported_title("Indila - Love Story Official Audio", "Indila"),
+            "Love Story",
+        )
+
+    def test_preserves_meaningful_parenthetical_title_details(self):
+        self.assertEqual(
+            clean_imported_title("Dusk Till Dawn (feat. Sia) - Radio Edit", "ZAYN/Sia"),
+            "Dusk Till Dawn (feat. Sia) - Radio Edit",
+        )
+
+    def test_preserves_remix_and_edit_suffixes(self):
+        self.assertEqual(
+            clean_imported_title("Despacito - Remix", "Luis Fonsi/Daddy Yankee/Justin Bieber"),
+            "Despacito - Remix",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

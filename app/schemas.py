@@ -24,6 +24,10 @@ class TrackUpdate(BaseModel):
     position: int | None = Field(default=None, ge=0)
 
 
+class ListeningTimeUpdate(BaseModel):
+    seconds: float = Field(gt=0, le=30)
+
+
 class TrackRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

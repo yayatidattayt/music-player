@@ -33,69 +33,42 @@ def get_db() -> Generator[Session, None, None]:
 
 def migrate_schema() -> None:
     inspector = inspect(engine)
-
     table_names = inspector.get_table_names()
-    if "tracks" not in table_names or "playlists" not in table_names:
-        return
-
-    existing_columns = {
-        column["name"]
-        for column in inspector.get_columns("tracks")
+    columns_by_table = {
+        "tracks": {
+            "audio_filename": "VARCHAR(255)",
+            "audio_path": "VARCHAR(500)",
+            "audio_content_type": "VARCHAR(100)",
+            "cover_filename": "VARCHAR(255)",
+            "cover_path": "VARCHAR(500)",
+            "cover_content_type": "VARCHAR(100)",
+            "is_liked": "BOOLEAN DEFAULT 0",
+            "liked_position": "INTEGER DEFAULT 0",
+            "lyrics": "TEXT",
+            "genre": "VARCHAR(120)",
+            "play_count": "INTEGER DEFAULT 0",
+            "listened_seconds": "FLOAT NOT NULL DEFAULT 0",
+        },
+        "playlists": {
+            "cover_filename": "VARCHAR(255)",
+            "cover_path": "VARCHAR(500)",
+            "cover_content_type": "VARCHAR(100)",
+            # Kept nullable on legacy rows until setup_admin.py safely assigns
+            # the existing library to the selected administrator.
+            "owner_id": "INTEGER REFERENCES users(id)",
+        },
+        "users": {"is_admin": "BOOLEAN NOT NULL DEFAULT FALSE"},
+        "listening_events": {
+            "user_id": "INTEGER REFERENCES users(id)",
+        },
     }
 
-    new_columns = {
-        "audio_filename": "VARCHAR(255)",
-        "audio_path": "VARCHAR(500)",
-        "audio_content_type": "VARCHAR(100)",
-        "cover_filename": "VARCHAR(255)",
-        "cover_path": "VARCHAR(500)",
-        "cover_content_type": "VARCHAR(100)",
-        "is_liked": "BOOLEAN DEFAULT 0",
-        "liked_position": "INTEGER DEFAULT 0",
-        "lyrics": "TEXT",
-        "genre": "VARCHAR(120)",
-        "play_count": "INTEGER DEFAULT 0",
-    }
-
-    missing_columns = {
-        name: column_type
-        for name, column_type in new_columns.items()
-        if name not in existing_columns
-    }
-
-    if not missing_columns:
-        return
-
-    with engine.begin() as connection:
-        for column_name, column_type in missing_columns.items():
-            connection.execute(
-                text(
-                    f"ALTER TABLE tracks "
-                    f"ADD COLUMN {column_name} {column_type}"
-                )
-            )
-
-    playlist_columns = {
-        column["name"]
-        for column in inspector.get_columns("playlists")
-    }
-    playlist_new_columns = {
-        "cover_filename": "VARCHAR(255)",
-        "cover_path": "VARCHAR(500)",
-        "cover_content_type": "VARCHAR(100)",
-    }
-    playlist_missing_columns = {
-        name: column_type
-        for name, column_type in playlist_new_columns.items()
-        if name not in playlist_columns
-    }
-
-    if playlist_missing_columns:
-        with engine.begin() as connection:
-            for column_name, column_type in playlist_missing_columns.items():
-                connection.execute(
-                    text(
-                        f"ALTER TABLE playlists "
-                        f"ADD COLUMN {column_name} {column_type}"
-                    )
-                )
+    for table, definitions in columns_by_table.items():
+        if table not in table_names:
+            continue
+        existing = {column["name"] for column in inspect(engine).get_columns(table)}
+        missing = {name: definition for name, definition in definitions.items() if name not in existing}
+        if missing:
+            with engine.begin() as connection:
+                for name, definition in missing.items():
+                    connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {definition}"))

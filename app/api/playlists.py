@@ -32,6 +32,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from ..database import get_db
+from .auth import get_current_user
 from ..models import ListeningEvent, Playlist, Track
 from ..schemas import (
     PlaylistCreate,
@@ -42,12 +43,13 @@ from ..schemas import (
     TrackCreate,
     TrackRead,
     TrackUpdate,
+    ListeningTimeUpdate,
     YouTubeDownloadRequest,
     YouTubeSearchRequest,
 )
 
 
-router = APIRouter(tags=["Playlists and tracks"])
+router = APIRouter(tags=["Playlists and tracks"], dependencies=[Depends(get_current_user)])
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 PUBLIC_LOOKUP_SSL = ssl._create_unverified_context()
 GETSONGBPM_API_KEY = os.getenv("GETSONGBPM_API_KEY", "").strip()
@@ -223,19 +225,26 @@ def catalog_title(value: str, artist: str | None = None) -> str:
 
 def clean_imported_title(value: str, artist: str | None = None) -> str:
     cleaned = catalog_title(value, artist)
-    cleaned = re.sub(r"\s*\([^)]*\)\s*$", "", cleaned)
-    cleaned = re.sub(r"\s*\[[^\]]*\]\s*$", "", cleaned)
-    cleaned = catalog_title(cleaned, artist)
-    if " - " in cleaned:
-        prefix, remainder = cleaned.split(" - ", 1)
-        if artist_prefix_matches(prefix, artist):
-            cleaned = remainder.strip()
+    noise = (
+        r"(?:official(?:\s+(?:audio|song|video|music\s+video|lyrics?|lyric\s+video))?"
+        r"|(?:music\s+)?video|audio|lyrics?|lyric\s+video|visuali[sz]er"
+        r"|performance|remaster(?:ed)?|hd|4k)"
+    )
+    # Keep meaningful suffixes such as “(feat. Sia)” and “(Radio Edit)”; only
+    # remove the promotional/version labels that clutter imported video titles.
     cleaned = re.sub(
-        r"\s*(?:[-|·:]\s*)?(?:official\s+)?(?:audio|song|video|music\s+video|lyrics?|lyric\s+video|visualizer|visualiser|performance|remaster(?:ed)?|hd|4k)\s*$",
+        rf"\s*[\(\[\{{]\s*{noise}\s*[\)\]\}}]\s*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        rf"\s*(?:[-|·:]\s*)?{noise}\s*$",
         "",
         cleaned,
         flags=re.IGNORECASE,
     ).strip(" -|·:")
+    cleaned = catalog_title(cleaned, artist)
     return cleaned or value.strip()
 
 
@@ -286,11 +295,23 @@ def lookup_cover_art(title: str, artist: str | None) -> dict:
             return title_score * .68 + artist_score * .32
 
         best = max(results, key=score, default=None)
-        if best and score(best) >= (.62 if wanted_artist else .58):
+        best_title = normalized_text((best or {}).get("trackName") or "")
+        title_match = SequenceMatcher(None, wanted_title, best_title).ratio() if wanted_title and best_title else 0
+        if wanted_title and best_title and (wanted_title in best_title or best_title in wanted_title):
+            title_match = max(title_match, .9)
+        minimum_score = .62 if wanted_artist else .72
+        if (
+            best
+            and (wanted_artist or len(wanted_title) >= 5)
+            and title_match >= .82
+            and score(best) >= minimum_score
+        ):
             artwork = best.get("artworkUrl100") or best.get("artworkUrl60")
             if artwork:
                 artwork = re.sub(r"/(?:60|100)x(?:60|100)(?:bb)?(?:-\d+)?\.", "/600x600bb.", artwork)
             return {
+                "title": best.get("trackName"),
+                "artist": best.get("artistName"),
                 "cover_url": artwork,
                 "genre": best.get("primaryGenreName"),
                 "album": best.get("collectionName"),
@@ -655,8 +676,18 @@ def analyze_song(song: str = Query(..., min_length=2, max_length=160), artist: s
     }
 
 
+def current_owner_id(db: Session) -> int:
+    owner_id = db.info.get("current_user_id")
+    if owner_id is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Please log in first.")
+    return int(owner_id)
+
+
 def get_playlist_or_404(playlist_id: int, db: Session) -> Playlist:
-    playlist = db.get(Playlist, playlist_id)
+    playlist = db.scalar(select(Playlist).where(
+        Playlist.id == playlist_id,
+        Playlist.owner_id == current_owner_id(db),
+    ))
     if playlist is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -666,7 +697,11 @@ def get_playlist_or_404(playlist_id: int, db: Session) -> Playlist:
 
 
 def get_track_or_404(track_id: int, db: Session) -> Track:
-    track = db.get(Track, track_id)
+    track = db.scalar(
+        select(Track)
+        .join(Playlist, Playlist.id == Track.playlist_id)
+        .where(Track.id == track_id, Playlist.owner_id == current_owner_id(db))
+    )
     if track is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -691,7 +726,7 @@ def ensure_unique_track(playlist_id: int, title: str, artist: str, db: Session) 
     status_code=status.HTTP_201_CREATED,
 )
 def create_playlist(playlist_in: PlaylistCreate, db: DbSession) -> Playlist:
-    playlist = Playlist(**playlist_in.model_dump())
+    playlist = Playlist(owner_id=current_owner_id(db), **playlist_in.model_dump())
     db.add(playlist)
     db.commit()
     db.refresh(playlist)
@@ -705,7 +740,7 @@ def list_playlists(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=100),
 ) -> PlaylistList:
-    query = select(Playlist)
+    query = select(Playlist).where(Playlist.owner_id == current_owner_id(db))
     if search:
         query = query.where(Playlist.name.ilike(f"%{search.strip()}%"))
 
@@ -736,7 +771,7 @@ def get_playlist(playlist_id: int, db: DbSession) -> Playlist:
     playlist = db.scalar(
         select(Playlist)
         .options(selectinload(Playlist.tracks))
-        .where(Playlist.id == playlist_id)
+        .where(Playlist.id == playlist_id, Playlist.owner_id == current_owner_id(db))
     )
     if playlist is None:
         raise HTTPException(
@@ -885,20 +920,25 @@ async def upload_track(
         raise
 
     metadata = read_audio_metadata(saved_path)
-
     fallback_title = Path(file.filename or "Untitled song").stem
-
     imported_title = metadata.get("title") or fallback_title
-    imported_artist = metadata.get("artist") or "Unknown artist"
+    known_artist = artist or metadata.get("artist")
+    catalog = lookup_cover_art(
+        catalog_title(title or imported_title, known_artist),
+        known_artist,
+    )
+    imported_artist = metadata.get("artist") or catalog.get("artist") or "Unknown artist"
     imported_album = metadata.get("album")
     imported_duration = metadata.get("duration_seconds")
     imported_genre = metadata.get("genre")
-    final_title = clean_imported_title(title or imported_title, artist or imported_artist)
-    final_artist = (artist or imported_artist).strip()
+    final_title = clean_imported_title(
+        title or metadata.get("title") or catalog.get("title") or fallback_title,
+        artist or metadata.get("artist") or imported_artist,
+    )
+    final_artist = (artist or metadata.get("artist") or catalog.get("artist") or "Unknown artist").strip()
     ensure_unique_track(playlist_id, final_title, final_artist, db)
     embedded_cover = extract_embedded_cover(saved_path)
     uploaded_cover = await save_cover_upload(cover) if cover else None
-    catalog = lookup_cover_art(catalog_title(final_title, final_artist), final_artist)
     catalog_cover = (
         save_remote_cover(catalog.get("cover_url"))
         if not uploaded_cover and not embedded_cover and catalog.get("cover_url")
@@ -934,7 +974,8 @@ def list_liked_tracks(db: DbSession) -> list[Track]:
     return list(
         db.scalars(
             select(Track)
-            .where(Track.is_liked.is_(True))
+            .join(Playlist, Playlist.id == Track.playlist_id)
+            .where(Track.is_liked.is_(True), Playlist.owner_id == current_owner_id(db))
             .order_by(Track.liked_position, Track.added_at, Track.id)
         ).all()
     )
@@ -979,17 +1020,30 @@ def update_track(track_id: int, track_in: TrackUpdate, db: DbSession) -> Track:
 def mark_track_played(track_id: int, db: DbSession) -> Track:
     track = get_track_or_404(track_id, db)
     track.play_count += 1
-    db.add(ListeningEvent(track_id=track.id))
+    db.add(ListeningEvent(track_id=track.id, user_id=current_owner_id(db)))
     db.commit()
     db.refresh(track)
     return track
+
+
+@router.post("/tracks/{track_id}/listening-time", status_code=status.HTTP_204_NO_CONTENT)
+def record_listening_time(track_id: int, payload: ListeningTimeUpdate, db: DbSession) -> Response:
+    track = get_track_or_404(track_id, db)
+    track.listened_seconds = float(track.listened_seconds or 0) + payload.seconds
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/tracks/{track_id}/catalog-metadata", response_model=TrackRead)
 def enrich_track_metadata(track_id: int, db: DbSession) -> Track:
     track = get_track_or_404(track_id, db)
     try:
-        catalog = lookup_cover_art(catalog_title(track.title, track.artist), track.artist)
+        known_artist = track.artist if track.artist.casefold() not in {"unknown", "unknown artist"} else None
+        catalog = lookup_cover_art(catalog_title(track.title, known_artist), known_artist)
+        if track.title.casefold() in {"unknown", "untitled song"} and catalog.get("title"):
+            track.title = catalog["title"]
+        if not known_artist and catalog.get("artist"):
+            track.artist = catalog["artist"]
         genre = str(catalog.get("genre") or "").strip()
         if genre and not track.genre:
             track.genre = genre
@@ -1010,8 +1064,16 @@ def enrich_track_metadata(track_id: int, db: DbSession) -> Track:
 
 @router.get("/listening/stats")
 def listening_stats(db: DbSession) -> dict:
-    tracks = list(db.scalars(select(Track).order_by(Track.play_count.desc(), Track.title)).all())
-    events = list(db.scalars(select(ListeningEvent).order_by(ListeningEvent.listened_at.desc()).limit(20)).all())
+    owner_id = current_owner_id(db)
+    tracks = list(db.scalars(
+        select(Track).join(Playlist, Playlist.id == Track.playlist_id)
+        .where(Playlist.owner_id == owner_id)
+        .order_by(Track.play_count.desc(), Track.title)
+    ).all())
+    events = list(db.scalars(
+        select(ListeningEvent).where(ListeningEvent.user_id == owner_id)
+        .order_by(ListeningEvent.listened_at.desc()).limit(20)
+    ).all())
     tracks_by_id = {track.id: track for track in tracks}
     recent = [tracks_by_id[event.track_id] for event in events if event.track_id in tracks_by_id]
     artist_counts: dict[str, int] = {}
@@ -1020,9 +1082,11 @@ def listening_stats(db: DbSession) -> dict:
         artist_counts[track.artist] = artist_counts.get(track.artist, 0) + track.play_count
         genre = track.genre or "Unsorted"
         genre_counts[genre] = genre_counts.get(genre, 0) + track.play_count
+    total_listened_seconds = round(sum(float(track.listened_seconds or 0) for track in tracks), 2)
     return {
         "total_listens": sum(track.play_count for track in tracks),
-        "total_minutes": round(sum((track.duration_seconds or 0) * track.play_count for track in tracks) / 60),
+        "total_listened_seconds": total_listened_seconds,
+        "total_minutes": round(total_listened_seconds / 60, 1),
         "top_tracks": [TrackRead.model_validate(track).model_dump(mode="json") for track in tracks[:8]],
         "top_artists": sorted(({"name": name, "listens": count} for name, count in artist_counts.items()), key=lambda item: item["listens"], reverse=True)[:6],
         "top_genres": sorted(({"name": name, "listens": count} for name, count in genre_counts.items()), key=lambda item: item["listens"], reverse=True)[:6],
@@ -1133,9 +1197,7 @@ def delete_track(track_id: int, db: DbSession) -> Response:
 
 @router.delete("/playlists/{playlist_id}/tracks/bulk-delete", status_code=status.HTTP_204_NO_CONTENT)
 def bulk_delete_tracks(playlist_id: int, track_ids: list[int], db: DbSession) -> Response:
-    playlist = db.get(Playlist, playlist_id)
-    if playlist is None:
-        raise HTTPException(status_code=404, detail="Playlist not found")
+    get_playlist_or_404(playlist_id, db)
     if not track_ids:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     tracks = list(db.scalars(select(Track).where(Track.playlist_id == playlist_id, Track.id.in_(track_ids))).all())
@@ -1190,7 +1252,8 @@ def reorder_liked_tracks(
             select(Track).where(
                 Track.id.in_(track_ids),
                 Track.is_liked.is_(True),
-            )
+            ).join(Playlist, Playlist.id == Track.playlist_id)
+            .where(Playlist.owner_id == current_owner_id(db))
         ).all()
     )
 
@@ -1241,12 +1304,16 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
             raise HTTPException(status_code=502, detail="The audio download did not produce a file.")
 
         metadata = read_audio_metadata(downloaded_path)
+        known_artist = metadata.get("artist") or info.get("artist")
+        source_title = metadata.get("title") or title
+        catalog = lookup_cover_art(catalog_title(source_title, known_artist), known_artist)
+        final_artist = (
+            known_artist or catalog.get("artist") or info.get("uploader") or "Unknown artist"
+        ).strip()
         final_title = clean_imported_title(
-            metadata.get("title") or title,
-            metadata.get("artist") or info.get("artist") or info.get("uploader"),
+            metadata.get("title") or catalog.get("title") or title,
+            final_artist,
         )
-        final_artist = (metadata.get("artist") or info.get("artist") or info.get("uploader") or "Unknown artist").strip()
-        catalog = lookup_cover_art(catalog_title(final_title, final_artist), final_artist)
         embedded_cover = extract_embedded_cover(downloaded_path)
         remote_cover = embedded_cover
         if not remote_cover and catalog.get("cover_url"):

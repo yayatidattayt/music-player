@@ -36,6 +36,16 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000) for the playlist manager. The API's interactive documentation is at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs). The database is created automatically in `data/playlists.db` when the server starts.
 
+### First administrator setup
+
+The existing pre-account library is kept unassigned until you choose its administrator. Stop the server once, then run this from the project folder:
+
+```powershell
+.\.venv\Scripts\python.exe setup_admin.py
+```
+
+Enter the administrator's email, display name, and password when prompted. If that email already has an account, its current password must be entered before it can be promoted. The setup assigns only legacy, unassigned playlists and listening history to that administrator; it does not move another user's private library. New signups start with an empty library, and each account's data persists in `data/playlists.db` on that computer.
+
 On Windows, you can also double-click `start_ydkmusic.bat`. It reuses a healthy server already running on port 8000 and uses port 8001 if that port belongs to another process.
 
 The interface supports creating, searching, editing, and deleting playlists; adding, filtering, editing, and removing songs; and showing song counts and playlist length. Playlist and song data are saved in SQLite.

@@ -1,3 +1,10 @@
+let storageScope = "guest";
+const localStorage = {
+  getItem: (key) => window.localStorage.getItem(`sideb-account:${storageScope}:${key}`),
+  setItem: (key, value) => window.localStorage.setItem(`sideb-account:${storageScope}:${key}`, value),
+  removeItem: (key) => window.localStorage.removeItem(`sideb-account:${storageScope}:${key}`),
+};
+
 const state = {
   playlists: [],
   likedTracks: [],
@@ -18,6 +25,9 @@ const state = {
   homePlaylists: [],
   stats: null,
   listenProgress: 0,
+  listenSecondsPending: new Map(),
+  listenFlushInFlight: new Set(),
+  listenFlushRetryAt: new Map(),
   lastPlaybackTime: null,
   countedListenTrackId: null,
   nowPlayingClosing: false,
@@ -31,18 +41,33 @@ const state = {
   lyricAnalysisTrackId: null,
   lyricAnalyzing: false,
   lyricRefresh: Number(localStorage.getItem("ydkmusic-lyric-refresh") || 0),
+  authStarted: false,
+  currentUser: null,
+  profileLoading: false,
 };
 
 const byId = (id) => document.getElementById(id);
 const playlistList = byId("playlist-list");
 const playlistView = byId("playlist-view");
+const profileView = byId("profile-view");
 const playlistSearch = byId("playlist-search");
 const connectionLabel = byId("connection-label");
 const statusLight = document.querySelector(".status-light");
 const audioEngine = byId("audio-engine");
 const visualizer = byId("now-playing-visualizer");
 const topbarVisualizer = byId("topbar-visualizer");
-const savedSidebarState = localStorage.getItem("ydkmusic-sidebar-collapsed") === "true";
+let savedSidebarState = localStorage.getItem("ydkmusic-sidebar-collapsed") === "true";
+const HOME_FEATURE_TRACK = {
+  id: -1,
+  title: "Middle of the Night",
+  artist: "Elley Duhé",
+  album: "Middle of the Night",
+  audio_url: "/media/middle-of-the-night.mp3",
+  cover_url: "/covers/middle-of-the-night.jpg",
+  duration_seconds: 190,
+  play_count: 0,
+  lyrics: "",
+};
 let playerTrack = null;
 let audioContext = null;
 let analyser = null;
@@ -52,6 +77,308 @@ let bassEnergy = 0;
 let peakLevels = [];
 let artThemeRequest = 0;
 let artThemeUrl = null;
+let previewFadeFrame = 0;
+let homePreviewFadeFrame = 0;
+const authVisualizerLevels = new Float32Array(88);
+
+function setAuthMode(mode) {
+  const loginMode = mode === "login";
+  document.body.classList.toggle("signup-mode", !loginMode);
+  byId("auth-login-form").hidden = !loginMode;
+  byId("auth-signup-form").hidden = loginMode;
+  byId("auth-login-tab").classList.toggle("is-active", loginMode);
+  byId("auth-signup-tab").classList.toggle("is-active", !loginMode);
+  byId("auth-login-tab").setAttribute("aria-selected", String(loginMode));
+  byId("auth-signup-tab").setAttribute("aria-selected", String(!loginMode));
+  byId("auth-status").textContent = "";
+  byId("auth-status").className = "auth-status";
+  byId("auth-title").textContent = loginMode ? "Welcome back." : "Make room for more music.";
+  byId("auth-kicker").textContent = loginMode ? "Your private music shelf" : "A home for your next favorite song";
+  byId("auth-intro").textContent = loginMode
+    ? "Sign in to keep your playlists, songs, and listening history together."
+    : "Create your account and keep your playlists, songs, and listening history together.";
+}
+
+async function toggleAuthPreview() {
+  const button = byId("auth-visual-play");
+  if (!button) return;
+  if (playerTrack?.id === HOME_FEATURE_TRACK.id && !audioEngine.paused) {
+    cancelPreviewVolumeRamps();
+    audioEngine.pause();
+  } else {
+    await playTrack(HOME_FEATURE_TRACK, { fadeIn: true });
+  }
+  if (!audioEngine.paused) setAuthStatus("");
+  updateAuthPreviewButton();
+}
+
+function fadeInAuthPreview() {
+  cancelPreviewVolumeRamps();
+  cancelAnimationFrame(previewFadeFrame);
+  const startedAt = performance.now();
+  const fadeDuration = 3800;
+  audioEngine.volume = 0;
+  const ramp = (now) => {
+    const progress = Math.min(1, (now - startedAt) / fadeDuration);
+    const targetVolume = Number(byId("auth-volume")?.value ?? 0.55);
+    audioEngine.volume = targetVolume * progress * progress;
+    if (progress < 1 && !audioEngine.paused) {
+      previewFadeFrame = requestAnimationFrame(ramp);
+    } else {
+      previewFadeFrame = 0;
+    }
+  };
+  previewFadeFrame = requestAnimationFrame(ramp);
+}
+
+function cancelPreviewVolumeRamps() {
+  if (previewFadeFrame) cancelAnimationFrame(previewFadeFrame);
+  if (homePreviewFadeFrame) cancelAnimationFrame(homePreviewFadeFrame);
+  previewFadeFrame = 0;
+  homePreviewFadeFrame = 0;
+}
+
+function fadeOutAuthenticatedPreview(targetVolume) {
+  if (playerTrack?.id !== HOME_FEATURE_TRACK.id || audioEngine.paused) return;
+  cancelPreviewVolumeRamps();
+  const startVolume = audioEngine.volume;
+  const startedAt = performance.now();
+  const fadeDuration = 7500;
+
+  const ramp = (now) => {
+    if (playerTrack?.id !== HOME_FEATURE_TRACK.id || audioEngine.paused) {
+      homePreviewFadeFrame = 0;
+      return;
+    }
+    const progress = Math.min(1, (now - startedAt) / fadeDuration);
+    const easedProgress = progress * progress * (3 - 2 * progress);
+    audioEngine.volume = startVolume * (1 - easedProgress);
+    if (progress < 1) {
+      homePreviewFadeFrame = requestAnimationFrame(ramp);
+      return;
+    }
+
+    homePreviewFadeFrame = 0;
+    audioEngine.pause();
+    audioEngine.volume = targetVolume;
+    byId("player-volume").value = String(targetVolume);
+    byId("auth-volume").value = String(targetVolume);
+    updatePlayerDisplay();
+    updateAuthPreviewButton();
+  };
+
+  homePreviewFadeFrame = requestAnimationFrame(ramp);
+}
+
+function updateAuthPreviewButton() {
+  const button = byId("auth-visual-play");
+  if (!button) return;
+  const playing = playerTrack?.id === HOME_FEATURE_TRACK.id && !audioEngine.paused;
+  button.textContent = playing ? "Ⅱ" : "▶";
+  button.classList.toggle("is-paused", !playing);
+  button.setAttribute("aria-label", `${playing ? "Pause" : "Play"} Middle of the Night`);
+  button.setAttribute("aria-pressed", String(playing));
+}
+
+function setAuthStatus(message, tone = "") {
+  const status = byId("auth-status");
+  status.textContent = message;
+  status.className = `auth-status ${tone}`.trim();
+}
+
+function startAuthenticatedApp(user) {
+  if (state.authStarted) return;
+  const previewContinuesIntoHome = playerTrack?.id === HOME_FEATURE_TRACK.id && !audioEngine.paused;
+  state.authStarted = true;
+  state.currentUser = user;
+  storageScope = `user-${user.id}`;
+  state.queue = JSON.parse(localStorage.getItem("ydkmusic-queue") || "[]");
+  state.lyricRefresh = Number(localStorage.getItem("ydkmusic-lyric-refresh") || 0);
+  savedSidebarState = localStorage.getItem("ydkmusic-sidebar-collapsed") === "true";
+  const storedAccountVolume = localStorage.getItem("sideb-volume");
+  const accountVolume = storedAccountVolume === null ? 0.8 : Number(storedAccountVolume);
+  const preferredVolume = Number.isFinite(accountVolume) && accountVolume >= 0 && accountVolume <= 1 ? accountVolume : 0.8;
+  if (!previewContinuesIntoHome) audioEngine.volume = preferredVolume;
+  byId("player-volume").value = preferredVolume;
+  byId("auth-volume").value = preferredVolume;
+  setSidebarCollapsed(savedSidebarState);
+  renderQueue();
+  state.currentView = "home";
+  document.body.classList.remove("auth-mode");
+  byId("auth-gate").hidden = true;
+  byId("app-shell").hidden = false;
+  if (user?.display_name) byId("connection-label").textContent = `Welcome, ${user.display_name}`;
+  const homeLoad = loadPlaylists(null);
+  if (previewContinuesIntoHome) {
+    void homeLoad.then(() => {
+      if (!byId("app-shell").hidden) {
+        requestAnimationFrame(() => fadeOutAuthenticatedPreview(preferredVolume));
+      }
+    });
+  }
+  const rememberedRoom = roomSession();
+  if (rememberedRoom?.room_id && rememberedRoom?.member_id && rememberedRoom?.token) {
+    saveRoomSession({ ...rememberedRoom, state: { members: [], queue: [] } });
+    connectRoomSocket();
+  } else {
+    maybeJoinRoomFromUrl();
+  }
+}
+
+async function initializeAuth() {
+  try {
+    const response = await fetch("/api/auth/me");
+    const payload = await response.json();
+    if (payload.authenticated) {
+      startAuthenticatedApp(payload.user);
+      return;
+    }
+    byId("auth-gate").hidden = false;
+    byId("app-shell").hidden = true;
+    document.body.classList.add("auth-mode");
+    await playTrack(HOME_FEATURE_TRACK, { fadeIn: true, authAutoplay: true });
+  } catch {
+    setAuthStatus("The server is unavailable. Start the app and try again.", "is-error");
+  }
+}
+
+async function submitAuth(mode, event) {
+  event.preventDefault();
+  const signup = mode === "signup";
+  const button = event.currentTarget.querySelector("button[type='submit']");
+  const payload = signup
+    ? {
+      display_name: byId("signup-name").value.trim(),
+      email: byId("signup-email").value.trim(),
+      email_confirm: byId("signup-email-confirm").value.trim(),
+      password: byId("signup-password").value,
+      password_confirm: byId("signup-password-confirm").value,
+    }
+    : {
+      email: byId("login-email").value.trim(),
+      password: byId("login-password").value,
+    };
+  button.disabled = true;
+  button.textContent = signup ? "Creating account…" : "Logging in…";
+  setAuthStatus("");
+  try {
+    const response = await fetch(`/api/auth/${signup ? "signup" : "login"}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      const detail = Array.isArray(data.detail) ? data.detail.map((item) => item.msg).join(" ") : data.detail;
+      throw new Error(detail || "Could not authenticate.");
+    }
+    setAuthStatus(signup ? "Account created." : "Logged in.", "is-success");
+    startAuthenticatedApp(data);
+  } catch (error) {
+    setAuthStatus(error.message, "is-error");
+  } finally {
+    button.disabled = false;
+    button.textContent = signup ? "Create account" : "Log in";
+  }
+}
+
+function profileInitials(name) {
+  return String(name || "User")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase() || "U";
+}
+
+function formatMemberSince(value) {
+  if (!value) return "Recently joined";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Recently joined";
+  return `Member since ${date.toLocaleDateString(undefined, { month: "long", year: "numeric" })}`;
+}
+
+function setProfileOpen(open) {
+  if (!profileView) return;
+  document.body.classList.toggle("profile-open", open);
+  profileView.hidden = !open;
+  playlistView.hidden = open;
+  document.querySelector(".crumbs").innerHTML = open
+    ? "<span>YOUR SPACE</span><span class=\"crumb-slash\">/</span><span>PROFILE</span>"
+    : "<span>COLLECTION</span><span class=\"crumb-slash\">/</span><span>PLAYLISTS</span>";
+  if (open) resetViewScroll();
+  updatePageArtworkTheme();
+}
+
+function renderProfile() {
+  const user = state.currentUser || {};
+  byId("profile-rail-avatar").textContent = profileInitials(user.display_name);
+  const playlists = state.homePlaylists || [];
+  const tracks = playlists.flatMap((playlist) => playlist.tracks || []);
+  const stats = state.stats || {};
+  const topTrack = stats.top_tracks?.[0] || [...tracks].sort((a, b) => (b.play_count || 0) - (a.play_count || 0))[0];
+  const topArtist = stats.top_artists?.[0];
+  const latestPlaylist = state.playlists[0];
+  profileView.innerHTML = `
+    <section class="profile-hero">
+      <div class="profile-avatar" aria-hidden="true">${escapeHtml(profileInitials(user.display_name))}</div>
+      <div class="profile-identity"><span class="eyebrow">Your profile</span><h1>${escapeHtml(user.display_name || "Music lover")}</h1><p class="profile-meta"><span>${escapeHtml(user.email || "")}</span><span class="profile-meta-dot" aria-hidden="true">·</span><span>${formatMemberSince(user.created_at)}</span></p></div>
+      <span class="profile-member-badge">${user.is_admin ? "✦ Administrator" : "● Member"}</span>
+    </section>
+    <section class="profile-stats" aria-label="Your library summary">
+      <article><span class="profile-stat-icon">♫</span><strong>${tracks.length}</strong><span>Songs saved</span></article>
+      <article><span class="profile-stat-icon">▱</span><strong>${playlists.length}</strong><span>Playlists</span></article>
+      <article><span class="profile-stat-icon">↗</span><strong>${stats.total_listens || 0}</strong><span>Listens</span></article>
+      <article class="profile-minutes-stat"><span class="profile-stat-icon">◷</span><strong data-minutes-heard>${formatMinutesHeard(stats.total_listened_seconds)}</strong><span>Minutes heard</span><small>Precise tracking starts now; older plays weren’t timed.</small></article>
+    </section>
+    <section class="profile-grid">
+      <article class="profile-card profile-highlight-card">
+        <div class="profile-card-heading"><div><span class="eyebrow">Most returned to</span><h2>Your top song</h2></div><span class="profile-card-mark">01</span></div>
+        ${topTrack ? `<div class="profile-featured-song"><span class="profile-featured-art"${coverStyle(topTrack.cover_url)}>${topTrack.cover_url ? "" : "♪"}</span><div><strong>${escapeHtml(topTrack.title)}</strong><span>${escapeHtml(topTrack.artist || "Unknown artist")}</span><small>${topTrack.play_count || 0} listens</small></div><button class="button button-quiet" type="button" data-action="play-track" data-track-id="${topTrack.id}">Play</button></div>` : '<p class="profile-empty">Start listening and your favorite song will show up here.</p>'}
+      </article>
+      <article class="profile-card">
+        <div class="profile-card-heading"><div><span class="eyebrow">Your taste</span><h2>Top artist</h2></div><span class="profile-card-mark">♪</span></div>
+        ${topArtist ? `<div class="profile-taste"><strong>${escapeHtml(topArtist.name)}</strong><span>${topArtist.listens} ${topArtist.listens === 1 ? "listen" : "listens"}</span></div>` : '<p class="profile-empty">Your top artist will appear after a few plays.</p>'}
+      </article>
+      <article class="profile-card profile-library-card">
+        <div class="profile-card-heading"><div><span class="eyebrow">Your collection</span><h2>Playlists</h2></div><span class="profile-card-mark">▤</span></div>
+        <div class="profile-playlist-list">${playlists.slice(0, 4).map((playlist, index) => `<button type="button" data-playlist-id="${playlist.id}"><span class="profile-playlist-art cover-${index % 4}"${coverStyle(playlist.cover_url)} aria-hidden="true"></span><span class="profile-playlist-copy"><strong>${escapeHtml(playlist.name)}</strong><small>${playlist.tracks?.length || 0} ${(playlist.tracks?.length || 0) === 1 ? "song" : "songs"}</small></span><span class="profile-playlist-arrow" aria-hidden="true">↗</span></button>`).join("") || '<p class="profile-empty">Your playlists will live here.</p>'}</div>
+      </article>
+      <article class="profile-card profile-account-card">
+        <div class="profile-card-heading"><div><span class="eyebrow">Account</span><h2>Your details</h2></div><span class="profile-card-mark">✦</span></div>
+        <dl class="profile-details"><div><dt>Email</dt><dd>${escapeHtml(user.email || "—")}</dd></div><div><dt>Library</dt><dd>${latestPlaylist ? `Last opened: ${escapeHtml(latestPlaylist.name)}` : "Ready for your first playlist"}</dd></div></dl>
+        <button id="profile-logout" class="button button-quiet profile-logout" type="button">Log out</button>
+      </article>
+    </section>
+    <button id="profile-back" class="profile-back" type="button">← Back to your library</button>`;
+  byId("profile-logout").addEventListener("click", logout);
+  byId("profile-back").addEventListener("click", () => setProfileOpen(false));
+}
+
+async function openProfile() {
+  setProfileOpen(true);
+  state.profileLoading = true;
+  profileView.innerHTML = '<div class="loading-view"><span class="loading-mark">b.</span><p>Gathering your listening story…</p></div>';
+  try {
+    if (!state.homePlaylists.length || !state.stats) {
+      state.homePlaylists = await Promise.all(state.playlists.map((playlist) => api(`/api/playlists/${playlist.id}`)));
+      state.stats = await api("/api/listening/stats");
+    }
+    renderProfile();
+  } catch (error) {
+    profileView.innerHTML = `<div class="profile-error"><h2>Couldn’t load your profile</h2><p>${escapeHtml(error.message || "Try again in a moment.")}</p><button class="button button-quiet" type="button" id="profile-retry">Try again</button></div>`;
+    byId("profile-retry").addEventListener("click", openProfile);
+  } finally {
+    state.profileLoading = false;
+  }
+}
+
+async function logout() {
+  if (playerTrack?.id > 0) await flushListeningTime(playerTrack.id);
+  await fetch("/api/auth/logout", { method: "POST" });
+  window.location.reload();
+}
 
 const roomState = {
   roomId: null,
@@ -464,7 +791,59 @@ function setupAudioAnalyzer() {
   frequencyData = new Uint8Array(analyser.frequencyBinCount);
 }
 
+function drawAuthVisualizer() {
+  const canvas = byId("auth-visualizer");
+  if (!canvas) return;
+  const bounds = canvas.getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return;
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  const pixelWidth = Math.round(bounds.width * ratio);
+  const pixelHeight = Math.round(bounds.height * ratio);
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
+  const context = canvas.getContext("2d");
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, bounds.width, bounds.height);
+  const playing = playerTrack?.id === HOME_FEATURE_TRACK.id && !audioEngine.paused;
+  if (analyser && frequencyData && playing) analyser.getByteFrequencyData(frequencyData);
+  const centerX = bounds.width / 2;
+  const centerY = bounds.height / 2;
+  const core = Math.min(bounds.width, bounds.height) * .365;
+  const bars = authVisualizerLevels.length;
+  const accent = getComputedStyle(document.documentElement).getPropertyValue("--art-accent").trim() || "#c5d77b";
+  const second = getComputedStyle(document.documentElement).getPropertyValue("--art-b").trim() || "#8a91d0";
+  for (let index = 0; index < bars; index += 1) {
+    const angle = (index / bars) * Math.PI * 2 - Math.PI / 2;
+    const bin = Math.min(frequencyData?.length - 1 || 0, Math.floor((index / bars) * (frequencyData?.length || 1) * .72));
+    const rawLevel = playing && frequencyData ? (frequencyData[bin] || 0) / 255 : 0;
+    const target = Math.pow(rawLevel, .78);
+    const current = authVisualizerLevels[index];
+    authVisualizerLevels[index] = current + (target - current) * (target > current ? .16 : .055);
+    const level = authVisualizerLevels[index];
+    const length = 4 + level * 34 + bassEnergy * (playing ? 7 : 0);
+    const inner = core + 3;
+    const outer = inner + length;
+    const palette = ["#76edc2", "#69c9e8", "#b7a0f4"];
+    const color = palette[Math.floor(index / 3) % palette.length];
+    context.beginPath();
+    context.moveTo(centerX + Math.cos(angle) * inner, centerY + Math.sin(angle) * inner);
+    context.lineTo(centerX + Math.cos(angle) * outer, centerY + Math.sin(angle) * outer);
+    context.strokeStyle = color;
+    context.globalAlpha = playing ? .58 + level * .3 : .24;
+    context.shadowColor = color;
+    context.shadowBlur = playing ? 8 + level * 9 : 2;
+    context.lineWidth = index % 4 === 0 ? 2.1 : 1.55;
+    context.lineCap = "round";
+    context.stroke();
+  }
+  context.shadowBlur = 0;
+  context.globalAlpha = 1;
+}
+
 function drawVisualizer() {
+  drawAuthVisualizer();
   drawTopbarVisualizer();
   if (!visualizer) {
     requestAnimationFrame(drawVisualizer);
@@ -626,6 +1005,9 @@ function updateArtTheme(url) {
       document.documentElement.style.setProperty("--art-b", colorB);
       document.documentElement.style.setProperty("--art-glow", `rgba(${mainColor.red}, ${mainColor.green}, ${mainColor.blue}, .2)`);
       document.documentElement.style.setProperty("--art-accent", colorA);
+      document.documentElement.style.setProperty("--chrome-art-a", colorA);
+      document.documentElement.style.setProperty("--chrome-art-b", colorB);
+      document.documentElement.style.setProperty("--chrome-art-accent", colorA);
     } catch {
       if (requestId === artThemeRequest) resetArtTheme();
     }
@@ -696,6 +1078,9 @@ function resetArtTheme() {
   document.documentElement.style.setProperty("--art-b", "#20231e");
   document.documentElement.style.setProperty("--art-glow", "rgba(255, 255, 255, .04)");
   document.documentElement.style.setProperty("--art-accent", "#c5d77b");
+  document.documentElement.style.setProperty("--chrome-art-a", "#20251c");
+  document.documentElement.style.setProperty("--chrome-art-b", "#2c3826");
+  document.documentElement.style.setProperty("--chrome-art-accent", "#c5d77b");
 }
 
 function showToast(message, isError = false) {
@@ -796,6 +1181,77 @@ async function api(path, options = {}) {
     throw new Error(message);
   }
   return data;
+}
+
+function formatMinutesHeard(seconds) {
+  const minutes = Math.max(0, Number(seconds) || 0) / 60;
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(minutes);
+}
+
+function refreshMinutesHeardDisplay() {
+  const minutes = formatMinutesHeard(state.stats?.total_listened_seconds);
+  document.querySelectorAll("[data-minutes-heard]").forEach((element) => {
+    element.textContent = minutes;
+  });
+}
+
+async function flushListeningTime(trackId) {
+  if (!trackId || trackId < 1 || state.listenFlushInFlight.has(trackId)) return;
+  if (Date.now() < (state.listenFlushRetryAt.get(trackId) || 0)) return;
+  const seconds = state.listenSecondsPending.get(trackId) || 0;
+  if (seconds < 0.05) return;
+  state.listenSecondsPending.delete(trackId);
+  state.listenFlushInFlight.add(trackId);
+  let recorded = false;
+  try {
+    await api(`/api/tracks/${trackId}/listening-time`, {
+      method: "POST",
+      body: JSON.stringify({ seconds: Number(seconds.toFixed(2)) }),
+      keepalive: true,
+    });
+    recorded = true;
+    state.listenFlushRetryAt.delete(trackId);
+    if (state.stats) {
+      state.stats.total_listened_seconds = Number(state.stats.total_listened_seconds || 0) + seconds;
+      state.stats.total_minutes = Math.round((state.stats.total_listened_seconds / 60) * 10) / 10;
+      refreshMinutesHeardDisplay();
+    }
+  } catch {
+    state.listenSecondsPending.set(trackId, (state.listenSecondsPending.get(trackId) || 0) + seconds);
+    state.listenFlushRetryAt.set(trackId, Date.now() + 10_000);
+  } finally {
+    state.listenFlushInFlight.delete(trackId);
+    if (recorded && (state.listenSecondsPending.get(trackId) || 0) >= 15 && !audioEngine.paused && playerTrack?.id === trackId) {
+      void flushListeningTime(trackId);
+    }
+  }
+}
+
+function flushListeningTimeOnExit() {
+  if (!navigator.sendBeacon) return;
+  for (const [trackId, seconds] of state.listenSecondsPending) {
+    if (trackId < 1 || seconds < 0.05) continue;
+    const payload = new Blob([JSON.stringify({ seconds: Number(seconds.toFixed(2)) })], { type: "application/json" });
+    if (navigator.sendBeacon(`/api/tracks/${trackId}/listening-time`, payload)) {
+      state.listenSecondsPending.delete(trackId);
+    }
+  }
+}
+
+function updatePageArtworkTheme() {
+  if (document.body.classList.contains("profile-open")) return;
+  if (playerTrack?.id > 0 && !audioEngine.paused) {
+    updateArtTheme(playerTrack.cover_url || state.activePlaylist?.cover_url || null);
+    return;
+  }
+  if (state.currentView === "playlist") {
+    const cover = state.activePlaylist?.cover_url || state.activePlaylist?.tracks?.find((track) => track.cover_url)?.cover_url;
+    updateArtTheme(cover || null);
+  } else if (state.currentView === "liked") {
+    updateArtTheme(state.likedTracks?.find((track) => track.cover_url)?.cover_url || null);
+  } else {
+    updateArtTheme(null);
+  }
 }
 
 async function importYouTubeTrack() {
@@ -1229,6 +1685,8 @@ function updatePlayerDisplay() {
   const volumeValue = byId("player-volume-value");
   const muteButton = byId("player-mute");
   document.body.classList.toggle("is-audio-playing", Boolean(playerTrack && !audioEngine.paused));
+  updatePageArtworkTheme();
+  updateAuthPreviewButton();
 
   const visibleVolume = audioEngine.muted ? 0 : audioEngine.volume;
   volumeValue.textContent = `${Math.round(visibleVolume * 100)}%`;
@@ -1266,6 +1724,19 @@ function updatePlayerDisplay() {
   const duration = Number.isFinite(audioEngine.duration)
     ? audioEngine.duration
     : Number(playerTrack.duration_seconds) || 0;
+  const authCurrentTime = byId("auth-current-time");
+  const authDuration = byId("auth-duration");
+  const authMiniDuration = byId("auth-mini-duration");
+  const authProgressFill = byId("auth-progress-fill");
+  const authSeek = byId("auth-seek");
+  if (authCurrentTime) authCurrentTime.textContent = formatClock(audioEngine.currentTime);
+  if (authDuration) authDuration.textContent = formatClock(duration || HOME_FEATURE_TRACK.duration_seconds);
+  if (authMiniDuration) authMiniDuration.textContent = formatClock(duration || HOME_FEATURE_TRACK.duration_seconds);
+  if (authProgressFill) authProgressFill.style.width = `${duration ? Math.min(100, (audioEngine.currentTime / duration) * 100) : 0}%`;
+  if (authSeek) {
+    authSeek.max = String(duration || HOME_FEATURE_TRACK.duration_seconds);
+    if (document.activeElement !== authSeek) authSeek.value = String(audioEngine.currentTime || 0);
+  }
 
   progress.max = duration || 100;
   progress.value = audioEngine.currentTime || 0;
@@ -1282,7 +1753,9 @@ async function playTrack(track, options = {}) {
     return;
   }
   setupAudioAnalyzer();
-  if (audioContext?.state === "suspended") await audioContext.resume();
+  if (audioContext?.state === "suspended") {
+    try { await audioContext.resume(); } catch { /* The user can enable playback with the visible Play control. */ }
+  }
 
   if (!track.audio_url) {
     showToast("This song does not have an uploaded audio file.", true);
@@ -1292,7 +1765,9 @@ async function playTrack(track, options = {}) {
   if (playerTrack?.id === track.id) {
     if (options.remote) return;
     if (audioEngine.paused) {
+      if (options.fadeIn) audioEngine.volume = 0;
       await audioEngine.play();
+      if (options.fadeIn) fadeInAuthPreview();
     } else {
       audioEngine.pause();
     }
@@ -1302,6 +1777,9 @@ async function playTrack(track, options = {}) {
     return;
   }
 
+  if (playerTrack?.id > 0 && playerTrack.id !== track.id) {
+    void flushListeningTime(playerTrack.id);
+  }
   playerTrack = track;
   state.lyricOffset = 0;
   state.lyricManualOffset = Number(localStorage.getItem(`sideb-lyrics-manual-offset-${track.id}`)) || 0;
@@ -1313,7 +1791,9 @@ async function playTrack(track, options = {}) {
   state.listenProgress = 0;
   state.lastPlaybackTime = null;
   state.countedListenTrackId = null;
-  audioEngine.volume = Number(byId("player-volume").value) || 0.8;
+  audioEngine.volume = options.fadeIn
+    ? 0
+    : Number(byId("player-volume").value);
   audioEngine.load();
 
   updatePlayerDisplay();
@@ -1322,8 +1802,18 @@ async function playTrack(track, options = {}) {
   if (options.autoplay !== false) {
     try {
       await audioEngine.play();
+      if (options.authAutoplay && audioContext?.state === "suspended") {
+        audioEngine.pause();
+        setAuthStatus("Your browser needs a Play tap before it can enable audio. Press Play to start the music.", "is-error");
+      } else if (options.fadeIn) {
+        fadeInAuthPreview();
+      }
     } catch {
-      showToast("The audio file could not be played.", true);
+      if (options.authAutoplay) {
+        setAuthStatus("Your browser blocked sound from starting automatically. Press Play to start the music.", "is-error");
+      } else {
+        showToast("The audio file could not be played.", true);
+      }
     }
   }
 
@@ -1420,6 +1910,7 @@ function renderLikedSongs() {
   state.currentView = "liked";
   state.activeId = null;
   state.activePlaylist = null;
+  updatePageArtworkTheme();
 
   const tracks = state.likedTracks;
 
@@ -1496,6 +1987,7 @@ function renderLikedSongs() {
 }
 
 async function loadLikedSongs() {
+  setProfileOpen(false);
   resetViewScroll();
   try {
     state.likedTracks = await api("/api/tracks/liked");
@@ -1578,6 +2070,7 @@ function lyricOfTheDay(tracks) {
 }
 
 function renderHome() {
+  updatePageArtworkTheme();
   const playlists = state.homePlaylists;
   const allTracks = playlists.flatMap((playlist) => playlist.tracks || []);
   const totalListens = state.stats?.total_listens ?? allTracks.reduce((sum, track) => sum + (track.play_count || 0), 0);
@@ -1587,7 +2080,7 @@ function renderHome() {
 
   playlistView.innerHTML = `
     <section class="home-hero"><span class="eyebrow">Your listening room</span><h1>Good music,<br><em>kept close.</em></h1><p>Everything you have made, saved, and returned to.</p></section>
-    <section class="home-stats"><article><strong>${playlists.length}</strong><span>playlists</span></article><article><strong>${allTracks.length}</strong><span>songs</span></article><article><strong>${totalListens}</strong><span>listens</span></article><article><strong>${state.stats?.total_minutes || 0}</strong><span>minutes heard</span></article></section>
+    <section class="home-stats"><article><strong>${playlists.length}</strong><span>playlists</span></article><article><strong>${allTracks.length}</strong><span>songs</span></article><article><strong>${totalListens}</strong><span>listens</span></article><article class="home-minutes-stat"><strong data-minutes-heard>${formatMinutesHeard(state.stats?.total_listened_seconds)}</strong><span>minutes heard</span><small>Precise tracking starts now; older plays weren’t timed.</small></article></section>
     <section class="home-section"><div class="home-section-heading"><div><span class="eyebrow">Your collections</span><h2>Playlists</h2></div></div><div class="home-playlist-grid">
       ${playlists.map((playlist, index) => `<button class="home-playlist-card" type="button" data-playlist-id="${playlist.id}"><span class="home-playlist-art cover-${index % 4}"${coverStyle(playlist.cover_url)}></span><strong>${escapeHtml(playlist.name)}</strong><small>${playlist.tracks.length} songs · ${playlist.tracks.reduce((sum, track) => sum + (track.play_count || 0), 0)} listens</small></button>`).join("") || '<p class="home-empty">Create your first playlist to give your library a home.</p>'}
     </div></section>
@@ -1598,6 +2091,7 @@ function renderHome() {
 }
 
 async function loadHome() {
+  setProfileOpen(false);
   state.currentView = "home";
   resetViewScroll();
   try {
@@ -1707,9 +2201,12 @@ function renderTrackRows() {
 }
 
 function renderPlaylist() {
+  if (state.currentView === "home") {
+    renderHome();
+    return;
+  }
   const playlist = state.activePlaylist;
-  const activeCover = playerTrack?.cover_url || playlist?.cover_url;
-  updateArtTheme(activeCover);
+  updatePageArtworkTheme();
   if (!playlist && state.currentView === "liked") {
     renderLikedSongs();
     return;
@@ -1763,6 +2260,7 @@ function renderPlaylist() {
 }
 
 async function loadPlaylist(id) {
+  setProfileOpen(false);
   state.currentView = "playlist";
   resetViewScroll();
   state.activeId = id;
@@ -1806,6 +2304,8 @@ async function loadPlaylists(selectId = state.activeId) {
     } else if (state.playlists.length) {
       await loadHome();
     } else {
+      setProfileOpen(false);
+      state.currentView = "home";
       state.homePlaylists = [];
       renderHome();
     }
@@ -1865,7 +2365,21 @@ document.addEventListener("click", async (event) => {
   const playlistButton = event.target.closest("[data-playlist-id]");
   if (playlistButton) {
     const id = Number(playlistButton.dataset.playlistId);
-    if (id !== state.activeId) await loadPlaylist(id);
+    if (id !== state.activeId || state.currentView !== "playlist") await loadPlaylist(id);
+    return;
+  }
+
+  const profileNavButton = event.target.closest("[data-profile-nav]");
+  if (profileNavButton) {
+    const destination = profileNavButton.dataset.profileNav;
+    if (destination === "library") {
+      if (state.playlists.length) await loadPlaylist(state.activeId || state.playlists[0].id);
+      else await loadHome();
+    } else if (destination === "profile") {
+      await openProfile();
+    } else if (destination === "logout") {
+      await logout();
+    }
     return;
   }
 
@@ -1926,9 +2440,12 @@ document.addEventListener("click", async (event) => {
   }
 
   if (action === "play-track") {
-    const track = [...(state.activePlaylist?.tracks || []), ...state.homePlaylists.flatMap((playlist) => playlist.tracks || [])].find(
-      (item) => item.id === Number(actionButton.dataset.trackId),
-    );
+    const requestedTrackId = Number(actionButton.dataset.trackId);
+    const track = requestedTrackId === HOME_FEATURE_TRACK.id
+      ? HOME_FEATURE_TRACK
+      : [...(state.activePlaylist?.tracks || []), ...state.homePlaylists.flatMap((playlist) => playlist.tracks || [])].find(
+        (item) => item.id === requestedTrackId,
+      );
 
     if (track) {
       byId("mood-dialog")?.close();
@@ -2390,11 +2907,17 @@ audioEngine.addEventListener("timeupdate", () => {
     const currentTime = audioEngine.currentTime;
     const previousTime = state.lastPlaybackTime;
     if (previousTime !== null && currentTime >= previousTime && currentTime - previousTime <= 1.5) {
-      state.listenProgress += currentTime - previousTime;
+      const elapsed = currentTime - previousTime;
+      state.listenProgress += elapsed;
+      if (playerTrack.id > 0) {
+        const pending = (state.listenSecondsPending.get(playerTrack.id) || 0) + elapsed;
+        state.listenSecondsPending.set(playerTrack.id, pending);
+        if (pending >= 15) void flushListeningTime(playerTrack.id);
+      }
     }
     state.lastPlaybackTime = currentTime;
 
-    if (state.listenProgress >= 30 && state.countedListenTrackId !== playerTrack.id) {
+    if (playerTrack.id > 0 && state.listenProgress >= 30 && state.countedListenTrackId !== playerTrack.id) {
       state.countedListenTrackId = playerTrack.id;
       api(`/api/tracks/${playerTrack.id}/played`, { method: "POST" })
         .then((playedTrack) => {
@@ -2423,6 +2946,12 @@ audioEngine.addEventListener("play", () => {
 });
 
 audioEngine.addEventListener("pause", () => {
+  if (homePreviewFadeFrame) {
+    cancelAnimationFrame(homePreviewFadeFrame);
+    homePreviewFadeFrame = 0;
+    audioEngine.volume = Number(byId("player-volume").value);
+  }
+  if (playerTrack?.id > 0) void flushListeningTime(playerTrack.id);
   stopLyricsClock();
   updateMediaSessionState();
   updatePlayerDisplay();
@@ -2438,9 +2967,14 @@ audioEngine.addEventListener("ended", () => {
 configureMediaSession();
 visualizer.hidden = true;
 drawVisualizer();
+window.addEventListener("pagehide", flushListeningTimeOnExit);
 
 byId("player-play").addEventListener("click", async () => {
   if (!playerTrack) return;
+  cancelPreviewVolumeRamps();
+  if (playerTrack.id === HOME_FEATURE_TRACK.id && audioEngine.volume < Number(byId("player-volume").value)) {
+    audioEngine.volume = Number(byId("player-volume").value);
+  }
 
   if (audioEngine.paused) {
     await audioEngine.play();
@@ -2471,10 +3005,31 @@ byId("player-progress").addEventListener("input", (event) => {
 });
 
 byId("player-volume").addEventListener("input", (event) => {
+  cancelPreviewVolumeRamps();
   audioEngine.volume = Number(event.target.value);
+  byId("auth-volume").value = String(audioEngine.volume);
   audioEngine.muted = false;
   localStorage.setItem("sideb-volume", String(audioEngine.volume));
   updatePlayerDisplay();
+});
+
+byId("auth-volume").addEventListener("input", (event) => {
+  cancelPreviewVolumeRamps();
+  audioEngine.volume = Number(event.target.value);
+  byId("player-volume").value = String(audioEngine.volume);
+  audioEngine.muted = false;
+  localStorage.setItem("sideb-volume", String(audioEngine.volume));
+  updatePlayerDisplay();
+});
+
+byId("auth-seek").addEventListener("input", (event) => {
+  if (playerTrack?.id !== HOME_FEATURE_TRACK.id) return;
+  audioEngine.currentTime = Number(event.target.value);
+  updatePlayerDisplay();
+});
+
+byId("auth-seek").addEventListener("change", () => {
+  if (playerTrack?.id === HOME_FEATURE_TRACK.id) broadcastPlaybackState();
 });
 
 byId("player-mute").addEventListener("click", () => {
@@ -2821,6 +3376,13 @@ byId("sidebar-toggle").addEventListener("click", () => {
   setSidebarCollapsed(!document.body.classList.contains("sidebar-collapsed"));
 });
 byId("sidebar-reopen").addEventListener("click", () => setSidebarCollapsed(false));
+byId("auth-login-tab").addEventListener("click", () => setAuthMode("login"));
+byId("auth-signup-tab").addEventListener("click", () => setAuthMode("signup"));
+byId("auth-login-form").addEventListener("submit", (event) => submitAuth("login", event));
+byId("auth-signup-form").addEventListener("submit", (event) => submitAuth("signup", event));
+byId("logout-button").addEventListener("click", logout);
+byId("profile-button").addEventListener("click", openProfile);
+byId("auth-visual-play").addEventListener("click", toggleAuthPreview);
 byId("room-button").addEventListener("click", openRoomDialog);
 byId("room-create-submit").addEventListener("click", createRoom);
 byId("room-join-submit").addEventListener("click", joinRoom);
@@ -2841,14 +3403,7 @@ byId("ytUrlInput").addEventListener("keydown", (event) => {
   if (event.key === "Enter") importYouTubeTrack();
 });
 setSidebarCollapsed(savedSidebarState);
-loadPlaylists(null);
-const rememberedRoom = roomSession();
-if (rememberedRoom?.room_id && rememberedRoom?.member_id && rememberedRoom?.token) {
-  saveRoomSession({ ...rememberedRoom, state: { members: [], queue: [] } });
-  connectRoomSocket();
-} else {
-  maybeJoinRoomFromUrl();
-}
+initializeAuth();
 
 
 let draggedTrackId = null;

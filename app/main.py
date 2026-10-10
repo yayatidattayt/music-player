@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from .api.auth import router as auth_router
 from .api.playlists import router as playlists_router
 from .api.rooms import cleanup_loop, router as rooms_router
 from .database import Base, engine, migrate_schema
@@ -64,4 +65,5 @@ def health() -> dict[str, str]:
 
 
 app.include_router(playlists_router, prefix="/api")
+app.include_router(auth_router, prefix="/api")
 app.include_router(rooms_router, prefix="/api")

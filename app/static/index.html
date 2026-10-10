@@ -7,11 +7,55 @@
     <meta name="description" content="A simple place to keep the music you love." />
     <title>Side B — Playlist Manager</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=20261010-5" />
-    <script src="/static/app.js?v=20261010-5" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20261011-24" />
+    <script src="/static/app.js?v=20261011-24" defer></script>
   </head>
-  <body>
-    <div class="app-shell">
+  <body class="auth-mode">
+    <section id="auth-gate" class="auth-gate" aria-labelledby="auth-title">
+      <div class="auth-card">
+        <section class="auth-visual" aria-label="Side B music preview">
+          <div class="auth-visual-glow auth-visual-glow-one"></div><div class="auth-visual-glow auth-visual-glow-two"></div>
+          <div class="auth-visual-topline"><div class="auth-brand"><span class="brand-mark" aria-hidden="true">b.</span><span>side b</span></div><span class="auth-live-pill"><i></i> live shelf</span></div>
+          <div class="auth-visual-copy"><span class="eyebrow">A quieter place for music</span><h2>Keep the songs<br /><em>that keep you.</em></h2><p>Build your own little corner of the internet — one record, one mood, one replay at a time.</p></div>
+          <div class="auth-orbit" aria-hidden="true"><canvas id="auth-visualizer" class="auth-radial-visualizer"></canvas><div class="auth-orbit-ring auth-orbit-ring-one"></div><div class="auth-orbit-ring auth-orbit-ring-two"></div><div class="auth-record"><span class="auth-record-label"></span><span class="auth-record-hole"></span></div><div class="auth-tone auth-tone-one"></div><div class="auth-tone auth-tone-two"></div></div>
+          <div class="auth-mini-player"><button id="auth-visual-play" class="auth-play-button is-paused" type="button" aria-label="Play Middle of the Night" aria-pressed="false">▶</button><span class="auth-track-cover" aria-hidden="true"></span><div class="auth-mini-copy"><strong id="auth-track-title">Middle of the Night</strong><span>Elley Duhé · <span id="auth-mini-duration">3:10</span></span></div><label class="auth-volume-control" aria-label="Preview volume"><span aria-hidden="true">♫</span><input id="auth-volume" type="range" min="0" max="1" step="0.01" value="0.55" aria-label="Preview volume" /></label></div>
+          <div class="auth-visual-footer"><span id="auth-current-time">0:00</span><label class="auth-progress" aria-label="Song position"><input id="auth-seek" type="range" min="0" max="184" step="0.1" value="0" aria-label="Seek through Middle of the Night" /><i id="auth-progress-fill"></i></label><span id="auth-duration">3:04</span></div>
+        </section>
+        <section class="auth-panel">
+          <div class="auth-panel-heading"><span class="eyebrow" id="auth-kicker">Your private music shelf</span><span class="auth-quiet-mark">♪</span></div>
+          <h1 id="auth-title">Welcome back.</h1>
+          <p id="auth-intro" class="auth-intro">Sign in to keep your playlists, songs, and listening history together.</p>
+          <div class="auth-tabs" role="tablist" aria-label="Account access">
+            <button id="auth-login-tab" class="auth-tab is-active" type="button" role="tab" aria-selected="true">Log in</button>
+            <button id="auth-signup-tab" class="auth-tab" type="button" role="tab" aria-selected="false">Create account</button>
+          </div>
+          <form id="auth-login-form" class="auth-form">
+            <label for="login-email">Email</label>
+            <input id="login-email" type="email" autocomplete="email" required placeholder="you@example.com" />
+            <label for="login-password">Password</label>
+            <input id="login-password" type="password" autocomplete="current-password" required placeholder="Your password" />
+            <button class="button button-accent auth-submit" type="submit">Log in</button>
+          </form>
+          <form id="auth-signup-form" class="auth-form" hidden>
+            <label for="signup-name">Display name</label>
+            <input id="signup-name" type="text" autocomplete="name" maxlength="80" required placeholder="Your name" />
+            <label for="signup-email">Email</label>
+            <input id="signup-email" type="email" autocomplete="email" required placeholder="you@example.com" />
+            <label for="signup-email-confirm">Confirm email</label>
+            <input id="signup-email-confirm" type="email" autocomplete="off" required placeholder="Type your email again" />
+            <label for="signup-password">Password <span class="optional">(8+ characters)</span></label>
+            <input id="signup-password" type="password" autocomplete="new-password" minlength="8" required placeholder="Create a password" />
+            <label for="signup-password-confirm">Confirm password</label>
+            <input id="signup-password-confirm" type="password" autocomplete="new-password" minlength="8" required placeholder="Type it again" />
+            <button class="button button-accent auth-submit" type="submit">Create account</button>
+          </form>
+          <p id="auth-status" class="auth-status" role="status" aria-live="polite"></p>
+          <p class="auth-panel-note"><span>✦</span> Your library stays close, private, and yours.</p>
+        </section>
+      </div>
+    </section>
+
+    <div id="app-shell" class="app-shell" hidden>
       <aside class="sidebar" aria-label="Playlist library">
         <a class="brand" href="/" aria-label="Side B home">
           <span class="brand-mark" aria-hidden="true">b.</span>
@@ -66,6 +110,12 @@
           <small id="room-sidebar-status">Start or join a room</small>
         </button>
 
+        <button id="profile-button" class="sidebar-tool-button profile-launch-button" type="button">
+          <span class="liked-songs-icon">◌</span>
+          <span>Your profile</span>
+          <small>account · listening</small>
+        </button>
+
         <section id="room-sidebar-card" class="room-sidebar-card" hidden aria-live="polite">
           <div class="room-card-heading">
             <div>
@@ -92,7 +142,16 @@
         <div class="sidebar-footer">
           <span class="status-light" aria-hidden="true"></span>
           <span id="connection-label">Connecting to your library</span>
+          <button id="logout-button" class="logout-button" type="button">Log out</button>
         </div>
+        <nav id="profile-rail" class="profile-rail" aria-label="Main navigation while viewing profile">
+          <button type="button" data-library-view="home" aria-label="Home" title="Home">⌂</button>
+          <button type="button" data-library-view="liked" aria-label="Liked songs" title="Liked songs">♡</button>
+          <button type="button" data-profile-nav="library" aria-label="Your library" title="Your library">▤</button>
+          <button type="button" data-profile-nav="profile" aria-label="Your profile" title="Your profile">◉</button>
+          <span id="profile-rail-avatar" class="profile-rail-avatar" aria-label="Your account">U</span>
+          <button type="button" data-profile-nav="logout" aria-label="Log out" title="Log out">↪</button>
+        </nav>
       </aside>
       <button class="sidebar-reopen" id="sidebar-reopen" type="button" aria-label="Open sidebar" title="Open sidebar">›</button>
 
@@ -106,6 +165,7 @@
         <section id="playlist-view" class="playlist-view" aria-live="polite">
           <div class="loading-view"><span class="loading-mark">b.</span><p>Setting the needle down…</p></div>
         </section>
+        <section id="profile-view" class="profile-view" aria-live="polite" hidden></section>
       </main>
     </div>
 
