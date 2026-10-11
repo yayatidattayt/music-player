@@ -22,7 +22,7 @@ if not exist ".venv\Scripts\python.exe" (
     )
 )
 
-if not exist ".venv\.ydkmusic-dependencies-installed-v3" (
+if not exist ".venv\.ydkmusic-dependencies-installed-v4" (
     echo Installing required packages for the first run...
     ".venv\Scripts\python.exe" -m pip install -r requirements.txt
     if errorlevel 1 (
@@ -30,7 +30,7 @@ if not exist ".venv\.ydkmusic-dependencies-installed-v3" (
         pause
         exit /b 1
     )
-    type nul > ".venv\.ydkmusic-dependencies-installed-v3"
+    type nul > ".venv\.ydkmusic-dependencies-installed-v4"
 )
 
 set "APP_PORT=8000"

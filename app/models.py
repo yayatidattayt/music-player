@@ -102,6 +102,9 @@ class Track(Base):
         if not self.audio_path:
             return None
 
+        if self.audio_path.startswith("r2://"):
+            return f"/api/tracks/{self.id}/audio"
+
         filename = Path(self.audio_path).name
         return f"/media/{filename}"
 

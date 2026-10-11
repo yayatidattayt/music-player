@@ -27,6 +27,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import RedirectResponse
 from mutagen import File as MutagenFile
 from dotenv import load_dotenv
 
@@ -63,6 +64,7 @@ from ..schemas import (
     YouTubeDownloadRequest,
     YouTubeSearchRequest,
 )
+from ..storage import delete_object, r2_enabled, signed_url, upload_path
 
 
 router = APIRouter(tags=["Playlists and tracks"], dependencies=[Depends(get_current_user)])
@@ -169,6 +171,26 @@ def create_director_cover(label: str) -> dict[str, str]:
         "path": str(path.relative_to(UPLOAD_DIR.parent)),
         "content_type": "image/svg+xml",
     }
+
+
+def store_audio_file(path: Path, filename: str, content_type: str | None) -> str:
+    """Persist audio remotely when R2 is configured; otherwise keep legacy local storage."""
+    if not r2_enabled():
+        return str(path.relative_to(UPLOAD_DIR.parent))
+    key = upload_path(path, content_type, f"audio/{uuid4().hex}-{filename}")
+    path.unlink(missing_ok=True)
+    return f"r2://{key}"
+
+
+def remove_stored_audio(audio_path: str | None) -> None:
+    if not audio_path:
+        return
+    if audio_path.startswith("r2://"):
+        delete_object(audio_path.removeprefix("r2://"))
+        return
+    local_path = Path(__file__).resolve().parents[1] / audio_path
+    if local_path.exists():
+        local_path.unlink()
 
 
 def unique_director_name(base: str, db: Session, owner_id: int) -> str:
@@ -1179,6 +1201,7 @@ async def upload_track(
     selected_cover = uploaded_cover or embedded_cover or catalog_cover
     final_album = (album or imported_album or catalog.get("album"))
     final_genre = imported_genre or catalog.get("genre")
+    stored_audio_path = store_audio_file(saved_path, file.filename or safe_filename, file.content_type)
 
     track = Track(
         playlist_id=playlist_id,
@@ -1189,7 +1212,7 @@ async def upload_track(
         duration_seconds=duration_seconds or imported_duration,
         genre=final_genre,
         audio_filename=file.filename,
-        audio_path=str(saved_path.relative_to(UPLOAD_DIR.parent)),
+        audio_path=stored_audio_path,
         audio_content_type=file.content_type,
         cover_filename=cover.filename if cover else (selected_cover["filename"] if selected_cover else None),
         cover_path=selected_cover["path"] if selected_cover else None,
@@ -1230,6 +1253,22 @@ def list_tracks(playlist_id: int, db: DbSession) -> list[Track]:
     )
     normalize_persisted_titles(tracks, db)
     return tracks
+
+
+@router.get("/tracks/{track_id}/audio")
+def play_track_audio(track_id: int, db: DbSession):
+    track = get_track_or_404(track_id, db)
+    if not track.audio_path:
+        raise HTTPException(status_code=404, detail="This track has no audio file.")
+    if track.audio_path.startswith("r2://"):
+        url = signed_url(track.audio_path.removeprefix("r2://"))
+        if not url:
+            raise HTTPException(status_code=503, detail="Remote audio storage is not configured.")
+        return RedirectResponse(url=url, status_code=307)
+    local_path = Path(__file__).resolve().parents[1] / track.audio_path
+    if not local_path.exists():
+        raise HTTPException(status_code=404, detail="The track audio file is missing from storage.")
+    return RedirectResponse(url=f"/media/{local_path.name}", status_code=307)
 
 
 @router.patch("/tracks/{track_id}", response_model=TrackRead)
@@ -1899,10 +1938,7 @@ def create_director_discovery_playlist(payload: DirectorDiscoverySaveRequest, db
             or imported.features and imported.features.musical_key and director_key_score(seed.features.musical_key, imported.features.musical_key) >= 0.45
         )
         if not language_ok or not bpm_ok or not key_ok or transition["score"] < 0.42:
-            if imported.audio_path:
-                rejected_audio = Path(__file__).resolve().parents[1] / imported.audio_path
-                if rejected_audio.exists():
-                    rejected_audio.unlink()
+            remove_stored_audio(imported.audio_path)
             db.delete(imported)
             db.commit()
             continue
@@ -2049,6 +2085,7 @@ async def upload_track_cover(
 @router.delete("/tracks/{track_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_track(track_id: int, db: DbSession) -> Response:
     track = get_track_or_404(track_id, db)
+    remove_stored_audio(track.audio_path)
     db.delete(track)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -2061,6 +2098,7 @@ def bulk_delete_tracks(playlist_id: int, track_ids: list[int], db: DbSession) ->
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     tracks = list(db.scalars(select(Track).where(Track.playlist_id == playlist_id, Track.id.in_(track_ids))).all())
     for track in tracks:
+        remove_stored_audio(track.audio_path)
         db.delete(track)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -2191,6 +2229,7 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
         if not remote_cover and catalog.get("cover_url"):
             remote_cover = save_remote_cover(catalog["cover_url"])
         ensure_unique_track(playlist.id, final_title, final_artist, db)
+        stored_audio_path = store_audio_file(downloaded_path, audio_filename, "audio/mpeg")
 
         track = Track(
             playlist_id=playlist.id,
@@ -2201,7 +2240,7 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
             duration_seconds=metadata.get("duration_seconds") or info.get("duration"),
             position=len(playlist.tracks),
             audio_filename=audio_filename,
-            audio_path=str(downloaded_path.relative_to(UPLOAD_DIR.parent)),
+            audio_path=stored_audio_path,
             audio_content_type="audio/mpeg",
             cover_filename=remote_cover["filename"] if remote_cover else None,
             cover_path=remote_cover["path"] if remote_cover else None,

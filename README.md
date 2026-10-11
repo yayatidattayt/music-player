@@ -36,6 +36,20 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000) for the playlist manager. The API's interactive documentation is at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs). The database is created automatically in `data/playlists.db` when the server starts.
 
+### Optional remote audio storage
+
+To avoid keeping permanent copies of uploaded or YouTube-imported audio on the computer, configure a Cloudflare R2 bucket in a `.env` file in the project folder:
+
+```env
+R2_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=your-r2-access-key
+R2_SECRET_ACCESS_KEY=your-r2-secret-key
+R2_BUCKET=ydkmusic-audio
+R2_REGION=auto
+```
+
+When all five values are present, new audio is uploaded to R2 and the temporary local copy is removed. Playback uses short-lived signed URLs. If R2 is not configured, the app keeps using its local-storage fallback so an offline/local setup still works. Existing local tracks are not migrated automatically.
+
 ### First administrator setup
 
 The existing pre-account library is kept unassigned until you choose its administrator. Stop the server once, then run this from the project folder:

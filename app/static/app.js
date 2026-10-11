@@ -2139,7 +2139,7 @@ function renderHome() {
     <section class="home-hero"><span class="eyebrow">Your listening room</span><h1>Good music,<br><em>kept close.</em></h1><p>Everything you have made, saved, and returned to.</p></section>
     <section class="home-stats"><article><strong>${playlists.length}</strong><span>playlists</span></article><article><strong>${allTracks.length}</strong><span>songs</span></article><article><strong>${totalListens}</strong><span>listens</span></article><article class="home-minutes-stat"><strong data-minutes-heard>${formatMinutesHeard(state.stats?.total_listened_seconds)}</strong><span>minutes heard</span><small>Precise tracking starts now; older plays weren’t timed.</small></article></section>
     <section class="home-section"><div class="home-section-heading"><div><span class="eyebrow">Your collections</span><h2>Playlists</h2></div></div><div class="home-playlist-grid">
-      ${playlists.map((playlist, index) => `<button class="home-playlist-card" type="button" data-playlist-id="${playlist.id}"><span class="home-playlist-art cover-${index % 4}"${coverStyle(playlist.cover_url)}></span><strong>${escapeHtml(playlist.name)}</strong><small>${playlist.tracks.length} songs · ${playlist.tracks.reduce((sum, track) => sum + (track.play_count || 0), 0)} listens</small></button>`).join("") || '<p class="home-empty">Create your first playlist to give your library a home.</p>'}
+      ${playlists.map((playlist, index) => `<button class="home-playlist-card" type="button" data-playlist-id="${playlist.id}"><span class="home-playlist-art cover-${index % 4}"${coverStyle(playlist.cover_url)}></span><strong>${escapeHtml(playlist.name)}</strong><small>${playlist.tracks.length} ${playlist.tracks.length === 1 ? "song" : "songs"} · ${playlist.tracks.reduce((sum, track) => sum + (track.play_count || 0), 0)} ${playlist.tracks.reduce((sum, track) => sum + (track.play_count || 0), 0) === 1 ? "listen" : "listens"}</small></button>`).join("") || '<p class="home-empty">Create your first playlist to give your library a home.</p>'}
     </div></section>
     <section class="home-columns"><div class="home-section"><div class="home-section-heading"><div><span class="eyebrow">Most returned to</span><h2>Top songs</h2></div></div><div class="home-top-list">${topTracks.map((track, index) => `<button type="button" data-action="play-track" data-track-id="${track.id}"><span>${String(index + 1).padStart(2, "0")}</span><strong>${escapeHtml(track.title)}</strong><small>${track.play_count || 0} listens</small></button>`).join("") || '<p class="home-empty">Your listening history will appear here.</p>'}</div>
       ${lyric ? `<article class="lyric-of-day"><div class="lyric-of-day-heading"><div><span class="eyebrow">Lyric of the day</span><span class="lyric-song-name">${escapeHtml(lyric.track.title)}</span></div><button class="lyric-refresh" type="button" data-action="refresh-lyric" aria-label="Show another lyric" title="Show another lyric">↻</button></div><blockquote>${lyric.excerpt.map((line) => `<p>${escapeHtml(line)}</p>`).join("")}</blockquote><button type="button" data-action="play-track" data-track-id="${lyric.track.id}">Play this song <span>↗</span></button></article>` : '<div class="lyric-of-day lyric-empty-card"><span class="eyebrow">Lyric of the day</span><p>Add lyrics to a song and a daily line will appear here.</p></div>'}
@@ -2773,15 +2773,28 @@ async function generateDirectorMix() {
     const mix = await api("/api/director/generate", { method: "POST", body: JSON.stringify(body) });
     state.directorSessionId = mix.session_id || null;
     const tracks = mix.items || [];
+    const songLabel = tracks.length === 1 ? "song" : "songs";
+    const durationMinutes = Math.round((mix.actual_duration_seconds || 0) / 60);
+    const durationLabel = durationMinutes === 0 ? "under 1 minute" : `about ${durationMinutes} minutes`;
     const qualityWarnings = mix.quality?.warnings || [];
     resultBox.innerHTML = `
-      <p><strong>${tracks.length} songs · about ${Math.round((mix.actual_duration_seconds || 0) / 60)} minutes</strong></p>
+      <p><strong>${tracks.length} ${songLabel} · ${durationLabel}</strong></p>
       ${qualityWarnings.length ? `<div class="director-warnings">${qualityWarnings.map((warning) => `<p>⚠ ${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
       <ol>${tracks.map((item) => `<li><strong>${escapeHtml(item.track.title)}</strong> — ${escapeHtml(item.track.artist)}${item.transition ? `<small> · ${escapeHtml(item.transition.transition || "Transition")}</small>` : ""}</li>`).join("")}</ol>
       <div class="dialog-actions">
         <button class="button button-quiet" type="button" id="director-discover">Find 15 online discoveries</button>
+        <button class="button button-quiet" type="button" id="director-copy">Copy mix details</button>
         <button class="button button-accent" type="button" id="director-save">Save as playlist</button>
       </div>`;
+    byId("director-copy").addEventListener("click", async () => {
+      const lines = tracks.map((item, index) => `${index + 1}. ${item.track.title} — ${item.track.artist}`);
+      try {
+        await navigator.clipboard.writeText(`${tracks.length} ${songLabel} · ${durationLabel}\n${lines.join("\n")}`);
+        showToast("Mix details copied.");
+      } catch (error) {
+        showToast("Could not copy mix details.", true);
+      }
+    });
     byId("director-save").addEventListener("click", async () => {
       const name = window.prompt("Name this mix", "Director Mix");
       if (!name) return;
