@@ -2827,7 +2827,7 @@ async function generateDirectorMix() {
       status.textContent = "Searching online for matching songs…";
       try {
         await new Promise((resolve) => setTimeout(resolve, 250));
-        status.textContent = "Checking online BPM and key data, then matching YouTube results…";
+        status.textContent = "Checking web BPM and key data; analyzing short previews if needed; then finding YouTube matches…";
         const discovery = await api("/api/director/discover", { method: "POST", body: JSON.stringify({ seed_track_id: seedTrackId, mood: byId("director-mood").value.trim() || null, language: byId("director-language").value.trim() || null, count: 15 }) });
         if (!discovery.tracks?.length) throw new Error("No songs with verifiable matching BPM and key were found this time. Try another seed or search again later.");
         status.textContent = `${discovery.tracks.length} new songs found. Nothing has been added yet.`;

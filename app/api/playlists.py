@@ -4,7 +4,7 @@ from tempfile import NamedTemporaryFile
 from typing import Annotated
 from uuid import uuid4
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 import json
 import math
@@ -255,6 +255,39 @@ def analyze_audio_features(file_path: Path) -> dict:
         }
     except Exception:
         return {}
+
+
+def analyze_catalog_preview(preview_url: str | None) -> dict:
+    """Temporarily analyze a short Apple Music preview when BPM/key APIs lack data."""
+    if not preview_url:
+        return {}
+    parsed = urlparse(preview_url)
+    if parsed.scheme != "https" or not (parsed.hostname or "").endswith(".itunes.apple.com"):
+        return {}
+
+    temporary_path: Path | None = None
+    try:
+        request = Request(preview_url, headers={"User-Agent": "Side B Director/1.0"})
+        with urlopen(request, timeout=10, context=PUBLIC_LOOKUP_SSL) as response:
+            audio_bytes = response.read(5 * 1024 * 1024 + 1)
+        if not audio_bytes or len(audio_bytes) > 5 * 1024 * 1024:
+            return {}
+        with NamedTemporaryFile(delete=False, suffix=".m4a") as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            temporary_file.write(audio_bytes)
+        features = analyze_audio_features(temporary_path)
+        if not features.get("bpm") or not features.get("key"):
+            return {}
+        return {
+            "bpm": features["bpm"],
+            "key": features["key"],
+            "source": "Apple Music preview audio analysis (estimated)",
+        }
+    except (HTTPError, URLError, TimeoutError, ValueError, OSError):
+        return {}
+    finally:
+        if temporary_path and temporary_path.exists():
+            temporary_path.unlink()
 
 
 def persist_track_features(
@@ -1881,6 +1914,8 @@ def discover_director_tracks(payload: DirectorDiscoverRequest, db: DbSession) ->
     except (HTTPError, URLError, TimeoutError, ValueError, OSError):
         catalog_entries = []
 
+    preview_analysis_count = 0
+    preview_analysis_limit = min(12, max(4, payload.count))
     for entry in catalog_entries[:max(20, min(60, payload.count * 4))]:
         if len(discovered) >= payload.count:
             break
@@ -1891,9 +1926,16 @@ def discover_director_tracks(payload: DirectorDiscoverRequest, db: DbSession) ->
         try:
             online = analyze_song(song=title, artist=artist)
         except Exception:
-            continue
+            online = {}
         online_bpm = online.get("bpm")
         online_key = online.get("key")
+        if (not online_bpm or not online_key) and entry.get("previewUrl") and preview_analysis_count < preview_analysis_limit:
+            preview_analysis_count += 1
+            preview_features = analyze_catalog_preview(str(entry["previewUrl"]))
+            online_bpm = online_bpm or preview_features.get("bpm")
+            online_key = online_key or preview_features.get("key")
+            if preview_features.get("source"):
+                online = {**online, "source": preview_features["source"]}
         if bpm and (not online_bpm or bpm_difference(float(bpm), float(online_bpm)) > 8):
             continue
         if key and (not online_key or director_key_score(key, str(online_key)) < 0.45):

@@ -1,4 +1,6 @@
 import unittest
+import json
+from io import BytesIO
 from unittest.mock import patch
 from urllib.error import URLError
 
@@ -163,6 +165,37 @@ class DirectorTests(unittest.TestCase):
                 count=1,
             ), self.db)
         self.assertEqual(result["found"], 0)
+
+    def test_discovery_can_verify_catalog_audio_when_metadata_service_has_no_match(self):
+        class FakeYoutubeDL:
+            def __init__(self, _options): pass
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def extract_info(self, _query, download=False):
+                return {"entries": [{
+                    "id": "catalog-match", "webpage_url": "https://www.youtube.com/watch?v=catalog-match",
+                    "thumbnail": "https://example.test/cover.jpg",
+                }]}
+
+        catalog = {"results": [{
+            "trackName": "Catalog match", "artistName": "New artist", "trackTimeMillis": 200000,
+            "previewUrl": "https://audio-ssl.itunes.apple.com/preview.m4a",
+        }]}
+        with patch("app.api.playlists.urlopen", return_value=BytesIO(json.dumps(catalog).encode())), \
+             patch("app.api.playlists.analyze_song", return_value={}), \
+             patch("app.api.playlists.analyze_catalog_preview", return_value={
+                 "bpm": 120, "key": "C major", "source": "test audio analysis",
+             }), \
+             patch("app.api.playlists.yt_dlp.YoutubeDL", FakeYoutubeDL):
+            result = discover_director_tracks(DirectorDiscoverRequest(
+                seed_track_id=self.seed.id,
+                count=1,
+            ), self.db)
+        self.assertEqual(result["found"], 1)
+        self.assertEqual(result["tracks"][0]["title"], "Catalog match")
+        self.assertEqual(result["tracks"][0]["bpm"], 120)
+        self.assertEqual(result["tracks"][0]["key"], "C major")
+        self.assertEqual(result["tracks"][0]["match_source"], "test audio analysis")
 
 
 if __name__ == "__main__":
