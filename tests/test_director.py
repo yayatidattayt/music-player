@@ -129,7 +129,7 @@ class DirectorTests(unittest.TestCase):
         before_playlists = self.db.query(Playlist).count()
         before_tracks = self.db.query(Track).count()
         with patch("app.api.playlists.urlopen", side_effect=URLError("offline")), \
-             patch("app.api.playlists.analyze_song", return_value={
+             patch("app.api.playlists.lookup_director_candidate_features", return_value={
                  "bpm": 120, "key": "C major", "language": "english", "source": "test metadata",
              }), \
              patch("app.api.playlists.yt_dlp.YoutubeDL", FakeYoutubeDL):
@@ -158,7 +158,7 @@ class DirectorTests(unittest.TestCase):
                 }]}
 
         with patch("app.api.playlists.urlopen", side_effect=URLError("offline")), \
-             patch("app.api.playlists.analyze_song", return_value={"bpm": None, "key": None}), \
+             patch("app.api.playlists.lookup_director_candidate_features", return_value={"bpm": None, "key": None}), \
              patch("app.api.playlists.yt_dlp.YoutubeDL", FakeYoutubeDL):
             result = discover_director_tracks(DirectorDiscoverRequest(
                 seed_track_id=self.seed.id,
@@ -182,7 +182,7 @@ class DirectorTests(unittest.TestCase):
             "previewUrl": "https://audio-ssl.itunes.apple.com/preview.m4a",
         }]}
         with patch("app.api.playlists.urlopen", return_value=BytesIO(json.dumps(catalog).encode())), \
-             patch("app.api.playlists.analyze_song", return_value={}), \
+             patch("app.api.playlists.lookup_director_candidate_features", return_value={}), \
              patch("app.api.playlists.analyze_catalog_preview", return_value={
                  "bpm": 120, "key": "C major", "source": "test audio analysis",
              }), \

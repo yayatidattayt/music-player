@@ -569,6 +569,54 @@ def fuzzy_artist_match(candidates: list, requested_artist: str) -> dict | None:
     return best if best_score >= 0.58 else None
 
 
+def lookup_director_candidate_features(song: str, artist: str) -> dict:
+    """Quick exact-recording BPM/key lookup for discovery, without broad scraping."""
+    compact_title = normalized_text(song)
+    compact_artist = normalized_text(artist)
+    for reference in KNOWN_SONG_ANALYSIS.values():
+        if normalized_text(reference.get("title", "")) == compact_title and normalized_text(reference.get("artist", "")) == compact_artist:
+            return {"bpm": reference.get("bpm"), "key": reference.get("key"), "source": reference.get("source")}
+    if not GETSONGBPM_API_KEY:
+        return {}
+    try:
+        search_request = Request(
+            "https://api.getsong.co/search/?" + urlencode({
+                "api_key": GETSONGBPM_API_KEY,
+                "type": "song",
+                "lookup": f"song:{song} artist:{artist}",
+                "limit": 5,
+            }),
+            headers={"User-Agent": "Side B Director/1.0"},
+        )
+        with urlopen(search_request, timeout=3, context=PUBLIC_LOOKUP_SSL) as response:
+            search_payload = json.loads(response.read().decode("utf-8"))
+        candidates = search_payload.get("search") or search_payload.get("songs") or []
+        if isinstance(candidates, dict):
+            candidates = [candidates] if candidates.get("id") else []
+        candidate = fuzzy_artist_match(candidates, artist) if isinstance(candidates, list) else None
+        if not candidate:
+            return {}
+        detail = candidate
+        if candidate.get("id"):
+            detail_request = Request(
+                "https://api.getsong.co/song/?" + urlencode({"api_key": GETSONGBPM_API_KEY, "id": candidate["id"]}),
+                headers={"User-Agent": "Side B Director/1.0"},
+            )
+            with urlopen(detail_request, timeout=3, context=PUBLIC_LOOKUP_SSL) as response:
+                detail = json.loads(response.read().decode("utf-8")).get("song") or candidate
+        artist_value = detail.get("artist") or {}
+        resolved_artist = artist_value.get("name") if isinstance(artist_value, dict) else artist_value
+        if resolved_artist and normalized_text(str(resolved_artist)) != compact_artist:
+            return {}
+        return {
+            "bpm": detail.get("tempo") or detail.get("bpm"),
+            "key": detail.get("key_of") or detail.get("key"),
+            "source": "GetSongBPM",
+        }
+    except (HTTPError, URLError, TimeoutError, ValueError, OSError, AttributeError):
+        return {}
+
+
 def lookup_cover_art(title: str, artist: str | None) -> dict:
     title = clean_imported_title(title, artist)
     search_text = f"{title} {artist or ''}".strip()
@@ -1908,18 +1956,13 @@ def discover_director_tracks(payload: DirectorDiscoverRequest, db: DbSession) ->
     # Start with a public catalog/web search so BPM and key can be checked
     # before asking YouTube for a playable result. This avoids treating a
     # loosely matching YouTube title as a valid Director recommendation.
-    catalog_terms = []
-    if seed.genre and seed.genre.casefold() not in {"music", "unknown", "uncategorized"}:
-        catalog_terms.extend(seed.genre.split())
-    if payload.mood:
+    generic_genre = not seed.genre or seed.genre.casefold() in {"music", "unknown", "uncategorized"}
+    catalog_terms = [seed.artist] if generic_genre else seed.genre.split()
+    if payload.mood and not generic_genre:
         mood_terms = [word for word in re.findall(r"[\w-]+", payload.mood) if word.casefold() not in {"music", "mood", "similar", "same"}]
         catalog_terms.extend(mood_terms)
     if not catalog_terms:
         catalog_terms.extend((seed.artist, seed.title))
-    elif seed.genre and seed.genre.casefold() in {"music", "unknown", "uncategorized"}:
-        # Generic imported genres such as "Music" are not useful search
-        # terms. Anchor catalog discovery to the actual recording instead.
-        catalog_terms = [seed.artist, seed.title, *catalog_terms]
     catalog_query = " ".join(part for part in catalog_terms if part).strip()
     try:
         catalog_request = Request(
@@ -1945,7 +1988,7 @@ def discover_director_tracks(payload: DirectorDiscoverRequest, db: DbSession) ->
         if not title or not artist or (title.casefold(), artist.casefold()) in existing:
             continue
         try:
-            online = analyze_song(song=title, artist=artist)
+            online = lookup_director_candidate_features(title, artist)
         except Exception:
             online = {}
         online_bpm = online.get("bpm")
@@ -2034,7 +2077,7 @@ def discover_director_tracks(payload: DirectorDiscoverRequest, db: DbSession) ->
         # preview unless an independent online metadata lookup verifies its
         # BPM and key against the seed.
         try:
-            online = analyze_song(song=title, artist=artist)
+            online = lookup_director_candidate_features(title, artist)
         except Exception:
             continue
         online_bpm = online.get("bpm")
