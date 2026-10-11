@@ -5309,6 +5309,24 @@ body.is-audio-playing .player-mini-wave i { animation-play-state: running; }
   to { transform: rotate(360deg) scale(calc(1 + (var(--cover-pulse, 0) * .022))); }
 }
 
+/* Lyrics-open desktop layout: reserve the drawer's column and reflow the
+   artwork plus playback controls into the remaining space. */
+@media (min-width: 1001px) {
+  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-content {
+    width: calc(100% - min(410px, 34vw) - 5vw) !important;
+    margin-left: 3vw !important;
+    margin-right: calc(min(410px, 34vw) + 2vw) !important;
+    grid-template-columns: minmax(260px, 420px) minmax(320px, 1fr) !important;
+    column-gap: clamp(28px, 4vw, 58px) !important;
+    transform: none !important;
+  }
+  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-art-stage {
+    width: min(420px, 100%) !important;
+    height: auto !important;
+    aspect-ratio: 1 / 1 !important;
+  }
+}
+
 /* Lyrics is a drawer, not a layout mode. Keep the artwork geometry square so
    opening it cannot squeeze the circular visualizer into an ellipse. */
 @media (min-width: 701px) {
