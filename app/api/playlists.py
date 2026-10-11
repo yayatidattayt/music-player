@@ -1849,6 +1849,87 @@ def discover_director_tracks(payload: DirectorDiscoverRequest, db: DbSession) ->
         ).all()
     }
     discovered = []
+
+    # Start with a public catalog/web search so BPM and key can be checked
+    # before asking YouTube for a playable result. This avoids treating a
+    # loosely matching YouTube title as a valid Director recommendation.
+    catalog_query = " ".join(part for part in (
+        seed.genre or "music",
+        payload.mood or "",
+        payload.language or "",
+    ) if part).strip()
+    try:
+        catalog_request = Request(
+            "https://itunes.apple.com/search?" + urlencode({
+                "term": catalog_query,
+                "entity": "song",
+                "limit": max(payload.count * 4, 20),
+            }),
+            headers={"User-Agent": "Side B Director/1.0"},
+        )
+        with urlopen(catalog_request, timeout=8, context=PUBLIC_LOOKUP_SSL) as response:
+            catalog_entries = (json.loads(response.read().decode("utf-8")).get("results") or [])
+    except (HTTPError, URLError, TimeoutError, ValueError, OSError):
+        catalog_entries = []
+
+    for entry in catalog_entries:
+        if len(discovered) >= payload.count:
+            break
+        title = str(entry.get("trackName") or "").strip()
+        artist = str(entry.get("artistName") or "").strip()
+        if not title or not artist or (title.casefold(), artist.casefold()) in existing:
+            continue
+        try:
+            online = analyze_song(song=title, artist=artist)
+        except Exception:
+            continue
+        online_bpm = online.get("bpm")
+        online_key = online.get("key")
+        if bpm and (not online_bpm or bpm_difference(float(bpm), float(online_bpm)) > 8):
+            continue
+        if key and (not online_key or director_key_score(key, str(online_key)) < 0.45):
+            continue
+        try:
+            with yt_dlp.YoutubeDL({
+                "quiet": True,
+                "noplaylist": True,
+                "extract_flat": True,
+                "socket_timeout": 10,
+            }) as ydl:
+                youtube_result = ydl.extract_info(f"ytsearch1:{title} {artist}", download=False)
+            youtube_entry = next(iter((youtube_result or {}).get("entries") or []), None)
+        except Exception:
+            youtube_entry = None
+        if not youtube_entry:
+            continue
+        url = youtube_entry.get("webpage_url") or youtube_entry.get("original_url")
+        if not url and youtube_entry.get("id"):
+            url = f"https://www.youtube.com/watch?v={youtube_entry['id']}"
+        if not url:
+            continue
+        existing.add((title.casefold(), artist.casefold()))
+        discovered.append({
+            "url": url,
+            "title": title,
+            "artist": artist,
+            "duration_seconds": entry.get("trackTimeMillis", 0) // 1000 or None,
+            "thumbnail": youtube_entry.get("thumbnail"),
+            "bpm": online_bpm,
+            "key": online_key,
+            "match_source": online.get("source") or "web catalog",
+        })
+
+    # Keep the existing YouTube search as a fallback when the catalog is
+    # unavailable or cannot verify enough exact BPM/key matches.
+    if len(discovered) >= payload.count:
+        return {
+            "playlist_id": None,
+            "query": catalog_query,
+            "requested": payload.count,
+            "found": len(discovered),
+            "tracks": discovered,
+        }
+
     try:
         with yt_dlp.YoutubeDL({
             "quiet": True,
