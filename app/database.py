@@ -49,6 +49,9 @@ def migrate_schema() -> None:
             "play_count": "INTEGER DEFAULT 0",
             "listened_seconds": "FLOAT NOT NULL DEFAULT 0",
         },
+        "track_features": {
+            "language": "VARCHAR(40)",
+        },
         "playlists": {
             "cover_filename": "VARCHAR(255)",
             "cover_path": "VARCHAR(500)",

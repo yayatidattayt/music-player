@@ -16,10 +16,10 @@ class ImportedTitleCleanupTests(unittest.TestCase):
             "Love Story",
         )
 
-    def test_keeps_hyphenated_title_when_artist_does_not_match(self):
+    def test_removes_live_version_suffix(self):
         self.assertEqual(
             clean_imported_title("Love Story - Live", "Indila"),
-            "Love Story - Live",
+            "Love Story",
         )
 
     def test_removes_unwrapped_official_audio_suffix(self):
@@ -28,16 +28,25 @@ class ImportedTitleCleanupTests(unittest.TestCase):
             "Love Story",
         )
 
-    def test_preserves_meaningful_parenthetical_title_details(self):
+    def test_removes_collaborators_and_version_details(self):
         self.assertEqual(
             clean_imported_title("Dusk Till Dawn (feat. Sia) - Radio Edit", "ZAYN/Sia"),
-            "Dusk Till Dawn (feat. Sia) - Radio Edit",
+            "Dusk Till Dawn",
         )
 
-    def test_preserves_remix_and_edit_suffixes(self):
+    def test_removes_remix_suffix(self):
         self.assertEqual(
             clean_imported_title("Despacito - Remix", "Luis Fonsi/Daddy Yankee/Justin Bieber"),
-            "Despacito - Remix",
+            "Despacito",
+        )
+
+    def test_removes_youtube_details_after_title_and_featured_artists(self):
+        self.assertEqual(
+            clean_imported_title(
+                "SUBEME LA RADIO (Official Video) ft. Descemer Bueno, Zion & Lennox",
+                "Enrique Iglesias",
+            ),
+            "SUBEME LA RADIO",
         )
 
 

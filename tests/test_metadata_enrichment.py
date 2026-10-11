@@ -52,6 +52,25 @@ class CatalogMetadataTests(unittest.TestCase):
         self.assertEqual(result["title"], "GO")
         self.assertEqual(result["artist"], "The Kid LAROI, Juice WRLD")
 
+    @patch("app.api.playlists.urlopen")
+    def test_lookup_normalizes_video_details_before_searching(self, urlopen):
+        urlopen.return_value = self.mock_catalog_response([{
+            "trackName": "Subeme La Radio",
+            "artistName": "Enrique Iglesias",
+            "collectionName": "FINAL (Vol. 1)",
+            "artworkUrl100": "https://example.test/100x100bb.jpg",
+        }])
+
+        result = lookup_cover_art(
+            "SUBEME LA RADIO (Official Video) ft. Descemer Bueno, Zion & Lennox",
+            "Enrique Iglesias",
+        )
+
+        request_url = urlopen.call_args.args[0].full_url
+        self.assertIn("subeme+la+radio", request_url.lower())
+        self.assertNotIn("official", request_url.lower())
+        self.assertEqual(result["artist"], "Enrique Iglesias")
+
 
 if __name__ == "__main__":
     unittest.main()

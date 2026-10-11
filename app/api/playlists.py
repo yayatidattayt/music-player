@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime, timezone
 from tempfile import NamedTemporaryFile
 from typing import Annotated
 from uuid import uuid4
@@ -6,13 +7,14 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 import json
+import math
 import os
 import re
 import shutil
 import ssl
 import yt_dlp
 from difflib import SequenceMatcher
-from html import unescape
+from html import escape, unescape
 
 from fastapi import (
     APIRouter,
@@ -33,7 +35,15 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..database import get_db
 from .auth import get_current_user
-from ..models import ListeningEvent, Playlist, Track
+from ..models import (
+    DirectorFeedback,
+    DirectorSession,
+    DirectorSessionTrack,
+    ListeningEvent,
+    Playlist,
+    Track,
+    TrackFeatures,
+)
 from ..schemas import (
     PlaylistCreate,
     PlaylistList,
@@ -44,6 +54,12 @@ from ..schemas import (
     TrackRead,
     TrackUpdate,
     ListeningTimeUpdate,
+    DirectorGenerateRequest,
+    DirectorSaveRequest,
+    DirectorFeedbackRequest,
+    DirectorDiscoverRequest,
+    DirectorDiscoverySaveRequest,
+    DirectorRegenerateRequest,
     YouTubeDownloadRequest,
     YouTubeSearchRequest,
 )
@@ -133,6 +149,35 @@ ALLOWED_COVER_TYPES = {
 }
 ALLOWED_COVER_EXTENSIONS = set(ALLOWED_COVER_TYPES.values()) | {".jpeg"}
 
+
+def create_director_cover(label: str) -> dict[str, str]:
+    """Create a lightweight local cover so Director playlists work offline."""
+    token = uuid4().hex
+    color_a = f"#{token[:6]}"
+    color_b = f"#{token[6:12]}"
+    safe_label = escape(re.sub(r"[^A-Za-z0-9 &-]", "", label)[:28] or "Director Mix")
+    filename = f"director-{token}.svg"
+    path = cover_dir / filename
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="{color_a}"/><stop offset="1" stop-color="{color_b}"/></linearGradient></defs>
+<rect width="800" height="800" fill="url(#g)"/><circle cx="650" cy="120" r="230" fill="#fff" opacity=".14"/><circle cx="120" cy="700" r="280" fill="#000" opacity=".18"/>
+<text x="70" y="650" fill="#fff" font-family="Arial,sans-serif" font-size="54" font-weight="700">{safe_label}</text>
+<text x="74" y="710" fill="#fff" opacity=".72" font-family="Arial,sans-serif" font-size="24" letter-spacing="5">DIRECTOR SESSION</text></svg>'''
+    path.write_text(svg, encoding="utf-8")
+    return {
+        "filename": filename,
+        "path": str(path.relative_to(UPLOAD_DIR.parent)),
+        "content_type": "image/svg+xml",
+    }
+
+
+def unique_director_name(base: str, db: Session, owner_id: int) -> str:
+    cleaned = " ".join(base.split()).strip() or "Director Mix"
+    candidate = cleaned[:120]
+    if db.scalar(select(Playlist.id).where(Playlist.owner_id == owner_id, Playlist.name == candidate)) is None:
+        return candidate
+    return f"{cleaned[:108]} · {uuid4().hex[:6]}"
+
 def read_audio_metadata(file_path: Path) -> dict:
     try:
         audio = MutagenFile(file_path, easy=True)
@@ -190,6 +235,188 @@ def analyze_audio_features(file_path: Path) -> dict:
         return {}
 
 
+def persist_track_features(
+    track: Track,
+    feature_data: dict,
+    db: Session,
+    source: str,
+) -> None:
+    """Create or update the durable feature record for a track."""
+    if not feature_data:
+        return
+
+    features = track.features
+    if features is None:
+        features = TrackFeatures(track_id=track.id)
+        db.add(features)
+
+    if feature_data.get("bpm") is not None:
+        try:
+            features.bpm = float(feature_data["bpm"])
+        except (TypeError, ValueError):
+            pass
+
+    if feature_data.get("key") is not None:
+        features.musical_key = str(feature_data["key"]).strip() or None
+
+    if feature_data.get("language") is not None:
+        features.language = str(feature_data["language"]).strip().casefold() or None
+
+    for field in ("energy", "danceability", "loudness"):
+        if feature_data.get(field) is not None:
+            try:
+                setattr(features, field, float(feature_data[field]))
+            except (TypeError, ValueError):
+                pass
+
+    features.feature_source = source
+    features.analyzed_at = datetime.now(timezone.utc)
+
+
+def ensure_track_features(track: Track, db: Session) -> None:
+    """Fill missing Director features from local audio, then trusted online metadata."""
+    if track.features is not None and track.features.bpm and track.features.musical_key:
+        return
+
+    metadata = {}
+    if track.audio_path:
+        audio_path = Path(__file__).resolve().parents[1] / track.audio_path
+        if audio_path.exists():
+            metadata = read_audio_metadata(audio_path)
+            metadata.update(analyze_audio_features(audio_path))
+            if metadata.get("bpm") or metadata.get("key"):
+                persist_track_features(track, metadata, db, "local_audio")
+
+    if not (metadata.get("bpm") and metadata.get("key")):
+        try:
+            online = analyze_song(track.title, track.artist)
+            if online.get("bpm") or online.get("key") or online.get("genre"):
+                persist_track_features(track, online, db, "online_catalog")
+        except Exception:
+            pass
+
+
+KEY_PITCHES = {
+    "c": 0, "b#": 0, "c#": 1, "db": 1, "d": 2, "d#": 3, "eb": 3,
+    "e": 4, "fb": 4, "e#": 5, "f": 5, "f#": 6, "gb": 6, "g": 7,
+    "g#": 8, "ab": 8, "a": 9, "a#": 10, "bb": 10, "b": 11, "cb": 11,
+}
+
+
+def normalize_language(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = re.sub(r"[^a-z]", "", value.casefold())
+    aliases = {
+        "en": "english", "eng": "english", "english": "english",
+        "hi": "hindi", "hin": "hindi", "hindi": "hindi",
+        "ar": "arabic", "ara": "arabic", "arabic": "arabic",
+        "es": "spanish", "spa": "spanish", "spanish": "spanish",
+        "fr": "french", "fra": "french", "french": "french",
+    }
+    return aliases.get(normalized, normalized or None)
+
+
+def bpm_difference(first: float | None, second: float | None) -> float | None:
+    if not first or not second:
+        return None
+    return min(abs(first - second), abs(first - second * 2), abs(first * 2 - second))
+
+
+def key_pitch(value: str | None) -> int | None:
+    if not value:
+        return None
+    match = re.search(r"([A-Ga-g](?:#|♯|b|♭)?)", value)
+    if not match:
+        return None
+    note = match.group(1).casefold().replace("♯", "#").replace("♭", "b")
+    return KEY_PITCHES.get(note)
+
+
+def key_mode(value: str | None) -> str | None:
+    if not value:
+        return None
+    lowered = value.casefold()
+    if "minor" in lowered or re.search(r"\bm\b", lowered):
+        return "minor"
+    if "major" in lowered or re.search(r"\bmaj\b", lowered):
+        return "major"
+    return None
+
+
+def director_key_score(first: str | None, second: str | None) -> float:
+    if not first or not second:
+        return 0.15
+    left = key_pitch(first)
+    right = key_pitch(second)
+    if left is None or right is None:
+        return 0.15
+    distance = min((left - right) % 12, (right - left) % 12)
+    first_mode = key_mode(first)
+    second_mode = key_mode(second)
+    mode_match = first_mode is None or second_mode is None or first_mode == second_mode
+    if distance == 0:
+        return 1.0 if mode_match else 0.7
+    if distance in {1, 5, 7}:
+        return 0.75 if mode_match else 0.5
+    if distance in {2, 3}:
+        return 0.45
+    return 0.1
+
+
+def director_track_score(seed: Track, candidate: Track, bpm_tolerance: float = 8) -> dict:
+    seed_features = seed.features
+    candidate_features = candidate.features
+    seed_bpm = seed_features.bpm if seed_features else None
+    candidate_bpm = candidate_features.bpm if candidate_features else None
+
+    if seed_bpm and candidate_bpm:
+        bpm_gap = bpm_difference(seed_bpm, candidate_bpm)
+        bpm_score = max(0.0, 1.0 - bpm_gap / max(1, bpm_tolerance * 2))
+    else:
+        bpm_gap = None
+        bpm_score = 0.15
+
+    key_score = director_key_score(
+        seed_features.musical_key if seed_features else None,
+        candidate_features.musical_key if candidate_features else None,
+    )
+    genre_score = (
+        1.0
+        if seed.genre and candidate.genre and seed.genre.casefold() == candidate.genre.casefold()
+        else 0.35
+    )
+    artist_score = 0.0 if seed.artist.casefold() == candidate.artist.casefold() else 1.0
+    confidence = 1.0 if candidate_features else 0.2
+    seed_language = normalize_language(seed_features.language if seed_features else None)
+    candidate_language = normalize_language(candidate_features.language if candidate_features else None)
+    if seed_language and candidate_language:
+        language_score = 1.0 if seed_language == candidate_language else 0.0
+    elif not seed_language and not candidate_language:
+        language_score = 0.5
+    else:
+        language_score = 0.25
+    novelty_score = max(0.1, 1.0 - min(int(candidate.play_count or 0), 20) / 20)
+    total = (
+        0.30 * bpm_score
+        + 0.25 * key_score
+        + 0.15 * genre_score
+        + 0.10 * artist_score
+        + 0.10 * language_score
+        + 0.05 * confidence
+        + 0.05 * novelty_score
+    )
+    return {
+        "score": round(total, 4),
+        "bpm_difference": round(bpm_gap, 1) if bpm_gap is not None else None,
+        "bpm_score": round(bpm_score, 4),
+        "key_score": round(key_score, 4),
+        "language_score": round(language_score, 4),
+        "novelty_score": round(novelty_score, 4),
+        "transition": "Smooth" if total >= 0.72 else "Loose" if total >= 0.48 else "Adventurous",
+    }
+
+
 def normalized_text(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.casefold())
 
@@ -210,12 +437,7 @@ def artist_prefix_matches(prefix: str, artist: str | None) -> bool:
 
 
 def catalog_title(value: str, artist: str | None = None) -> str:
-    cleaned = re.sub(
-        r"\s*(?:\([^)]*(?:official|video|audio|lyrics|visualizer)[^)]*\)|\[[^\]]*(?:official|video|audio|lyrics|visualizer)[^\]]*\])\s*$",
-        "",
-        value,
-        flags=re.IGNORECASE,
-    ).strip()
+    cleaned = value.strip()
     if " - " in cleaned:
         prefix, remainder = cleaned.split(" - ", 1)
         if artist_prefix_matches(prefix, artist):
@@ -225,27 +447,34 @@ def catalog_title(value: str, artist: str | None = None) -> str:
 
 def clean_imported_title(value: str, artist: str | None = None) -> str:
     cleaned = catalog_title(value, artist)
+    # Imported video titles commonly append collaborators, release versions,
+    # and upload labels. Keep only the canonical song name so catalog lookups
+    # receive the same title a listener would search for.
+    cleaned = re.sub(r"\s*[\(\[\{][^\)\]\}]*[\)\]\}]", "", cleaned)
+    cleaned = re.sub(r"\s+(?:feat(?:uring)?|ft)\.?\s+.+$", "", cleaned, flags=re.IGNORECASE)
     noise = (
         r"(?:official(?:\s+(?:audio|song|video|music\s+video|lyrics?|lyric\s+video))?"
         r"|(?:music\s+)?video|audio|lyrics?|lyric\s+video|visuali[sz]er"
-        r"|performance|remaster(?:ed)?|hd|4k)"
+        r"|performance|remaster(?:ed)?|hd|4k|live|remix|radio\s+edit"
+        r"|extended(?:\s+mix)?|instrumental|acoustic|version|edit|mix"
+        r"|sped\s*up|slowed(?:\s+and\s+reverb)?|nightcore)"
     )
-    # Keep meaningful suffixes such as “(feat. Sia)” and “(Radio Edit)”; only
-    # remove the promotional/version labels that clutter imported video titles.
-    cleaned = re.sub(
-        rf"\s*[\(\[\{{]\s*{noise}\s*[\)\]\}}]\s*$",
-        "",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    cleaned = re.sub(
-        rf"\s*(?:[-|·:]\s*)?{noise}\s*$",
-        "",
-        cleaned,
-        flags=re.IGNORECASE,
-    ).strip(" -|·:")
+    cleaned = re.sub(rf"\s*(?:[-|·:]\s*)?{noise}\s*$", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -|·:")
     cleaned = catalog_title(cleaned, artist)
     return cleaned or value.strip()
+
+
+def normalize_persisted_titles(tracks: list[Track], db: Session) -> None:
+    """Apply the canonical title cleanup to older imports when they are read."""
+    changed = False
+    for track in tracks:
+        cleaned = clean_imported_title(track.title, track.artist)
+        if cleaned != track.title:
+            track.title = cleaned
+            changed = True
+    if changed:
+        db.commit()
 
 
 def fuzzy_artist_match(candidates: list, requested_artist: str) -> dict | None:
@@ -265,6 +494,7 @@ def fuzzy_artist_match(candidates: list, requested_artist: str) -> dict | None:
 
 
 def lookup_cover_art(title: str, artist: str | None) -> dict:
+    title = clean_imported_title(title, artist)
     search_text = f"{title} {artist or ''}".strip()
     # Apple is deliberately limited to artwork and genre here. BPM/key stay
     # owned by the analysis provider so the result never mixes sources.
@@ -481,8 +711,8 @@ async def preview_track_metadata(file: UploadFile = File(...)) -> dict:
 @router.get("/song-analysis")
 def analyze_song(song: str = Query(..., min_length=2, max_length=160), artist: str | None = Query(None, max_length=150)) -> dict:
     """Return online music details, with a useful partial result if a source is down."""
-    query = song.strip()
     artist_query = (artist or "").strip()
+    query = clean_imported_title(song, artist_query)
     lookup_query = f"song:{query} artist:{artist_query}" if artist_query else query
 
     normalized_query = query.casefold()
@@ -778,6 +1008,7 @@ def get_playlist(playlist_id: int, db: DbSession) -> Playlist:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Playlist with id {playlist_id} was not found",
         )
+    normalize_persisted_titles(playlist.tracks, db)
     return playlist
 
 
@@ -920,6 +1151,7 @@ async def upload_track(
         raise
 
     metadata = read_audio_metadata(saved_path)
+    metadata.update(analyze_audio_features(saved_path))
     fallback_title = Path(file.filename or "Untitled song").stem
     imported_title = metadata.get("title") or fallback_title
     known_artist = artist or metadata.get("artist")
@@ -967,11 +1199,14 @@ async def upload_track(
     db.add(track)
     db.commit()
     db.refresh(track)
+    persist_track_features(track, metadata, db, "local_audio")
+    db.commit()
+    db.refresh(track)
     return track
 
 @router.get("/tracks/liked", response_model=list[TrackRead])
 def list_liked_tracks(db: DbSession) -> list[Track]:
-    return list(
+    tracks = list(
         db.scalars(
             select(Track)
             .join(Playlist, Playlist.id == Track.playlist_id)
@@ -979,18 +1214,22 @@ def list_liked_tracks(db: DbSession) -> list[Track]:
             .order_by(Track.liked_position, Track.added_at, Track.id)
         ).all()
     )
+    normalize_persisted_titles(tracks, db)
+    return tracks
 
 
 @router.get("/playlists/{playlist_id}/tracks", response_model=list[TrackRead])
 def list_tracks(playlist_id: int, db: DbSession) -> list[Track]:
     get_playlist_or_404(playlist_id, db)
-    return list(
+    tracks = list(
         db.scalars(
             select(Track)
             .where(Track.playlist_id == playlist_id)
             .order_by(Track.position, Track.id)
         ).all()
     )
+    normalize_persisted_titles(tracks, db)
+    return tracks
 
 
 @router.patch("/tracks/{track_id}", response_model=TrackRead)
@@ -1039,10 +1278,13 @@ def enrich_track_metadata(track_id: int, db: DbSession) -> Track:
     track = get_track_or_404(track_id, db)
     try:
         known_artist = track.artist if track.artist.casefold() not in {"unknown", "unknown artist"} else None
-        catalog = lookup_cover_art(catalog_title(track.title, known_artist), known_artist)
-        if track.title.casefold() in {"unknown", "untitled song"} and catalog.get("title"):
-            track.title = catalog["title"]
-        if not known_artist and catalog.get("artist"):
+        cleaned_title = clean_imported_title(track.title, known_artist)
+        catalog = lookup_cover_art(cleaned_title, known_artist)
+        if catalog.get("title"):
+            track.title = clean_imported_title(catalog["title"], catalog.get("artist") or known_artist)
+        else:
+            track.title = cleaned_title
+        if catalog.get("artist"):
             track.artist = catalog["artist"]
         genre = str(catalog.get("genre") or "").strip()
         if genre and not track.genre:
@@ -1060,6 +1302,623 @@ def enrich_track_metadata(track_id: int, db: DbSession) -> Track:
     except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, ValueError):
         pass
     return track
+
+
+@router.post("/tracks/{track_id}/analyze-features", response_model=TrackRead)
+def analyze_existing_track_features(track_id: int, db: DbSession) -> Track:
+    track = get_track_or_404(track_id, db)
+    if not track.audio_path:
+        raise HTTPException(status_code=422, detail="This track has no local audio file to analyze.")
+
+    audio_path = Path(__file__).resolve().parents[1] / track.audio_path
+    if not audio_path.exists():
+        raise HTTPException(status_code=404, detail="The track audio file is missing from storage.")
+
+    metadata = read_audio_metadata(audio_path)
+    metadata.update(analyze_audio_features(audio_path))
+    if not metadata.get("bpm") and not metadata.get("key"):
+        raise HTTPException(status_code=422, detail="No BPM or musical-key data could be detected.")
+
+    persist_track_features(track, metadata, db, "local_audio")
+    db.commit()
+    db.refresh(track)
+    return track
+
+
+@router.get("/director/similar/{track_id}")
+def director_similar_tracks(
+    track_id: int,
+    db: DbSession,
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict:
+    seed = get_track_or_404(track_id, db)
+    owner_id = current_owner_id(db)
+    candidates = list(
+        db.scalars(
+            select(Track)
+            .join(Playlist, Playlist.id == Track.playlist_id)
+            .options(selectinload(Track.features))
+            .where(
+                Playlist.owner_id == owner_id,
+                Track.id != seed.id,
+            )
+        ).all()
+    )
+
+    ranked = []
+    for candidate in candidates:
+        details = director_track_score(seed, candidate)
+        ranked.append({
+            "track": TrackRead.model_validate(candidate).model_dump(mode="json"),
+            "score": details["score"],
+            "transition": details,
+        })
+
+    ranked.sort(key=lambda item: item["score"], reverse=True)
+    return {
+        "seed_track_id": seed.id,
+        "items": ranked[:limit],
+    }
+
+
+@router.post("/director/generate")
+def generate_director_mix(payload: DirectorGenerateRequest, db: DbSession) -> dict:
+    owner_id = current_owner_id(db)
+    if payload.seed_track_id:
+        seed = get_track_or_404(payload.seed_track_id, db)
+    elif payload.seed_playlist_id:
+        seed_playlist = get_playlist_or_404(payload.seed_playlist_id, db)
+        seed = seed_playlist.tracks[0] if seed_playlist.tracks else None
+        if seed is None:
+            raise HTTPException(status_code=422, detail="The seed playlist has no tracks.")
+    else:
+        raise HTTPException(status_code=422, detail="Provide seed_track_id or seed_playlist_id.")
+
+    if payload.seed_playlist_id and seed.playlist_id != payload.seed_playlist_id:
+        raise HTTPException(status_code=422, detail="The selected song is not in the selected playlist.")
+
+    seed_playlist_owner = db.scalar(
+        select(Playlist.owner_id).where(Playlist.id == seed.playlist_id)
+    )
+    if seed_playlist_owner != owner_id:
+        raise HTTPException(status_code=404, detail="Track not found.")
+
+    ensure_track_features(seed, db)
+
+    candidate_scope = (
+        (Playlist.owner_id == owner_id, Playlist.id == payload.seed_playlist_id)
+        if payload.seed_playlist_id
+        else (Playlist.owner_id == owner_id,)
+    )
+    candidates = list(
+        db.scalars(
+            select(Track)
+            .join(Playlist, Playlist.id == Track.playlist_id)
+            .options(selectinload(Track.features))
+            .where(*candidate_scope, Track.id != seed.id)
+        ).all()
+    )
+    seed_genre = (seed.genre or "").casefold()
+    candidates.sort(key=lambda track: (
+        0 if seed_genre and (track.genre or "").casefold() == seed_genre else 1,
+        int(track.play_count or 0),
+        track.id,
+    ))
+    # Analyze a small, deterministic shortlist per request. The rest of the
+    # library remains available for later sessions and discovery searches.
+    candidates = candidates[:max(12, min(100, payload.target_track_count * 3))]
+    for candidate in candidates:
+        ensure_track_features(candidate, db)
+    db.commit()
+
+    recent_director_ids = {
+        track_id
+        for track_id in db.scalars(
+            select(DirectorSessionTrack.track_id)
+            .join(DirectorSession, DirectorSession.id == DirectorSessionTrack.session_id)
+            .where(DirectorSession.owner_id == owner_id)
+            .order_by(DirectorSessionTrack.id.desc())
+            .limit(100)
+        ).all()
+    }
+
+    target_track_count = payload.target_track_count
+    selected = [seed]
+    remaining = {track.id: track for track in candidates}
+    duration = int(seed.duration_seconds or 0)
+    current = seed
+    artist_counts = {seed.artist.casefold(): 1}
+
+    while remaining and len(selected) < min(payload.max_tracks, target_track_count):
+        ranked = []
+        for candidate in remaining.values():
+            if artist_counts.get(candidate.artist.casefold(), 0) >= 3:
+                continue
+            current_features = current.features
+            candidate_features = candidate.features
+            if current_features and current_features.bpm and (not candidate_features or not candidate_features.bpm):
+                continue
+            if current_features and current_features.musical_key and (not candidate_features or not candidate_features.musical_key):
+                continue
+            reference_bpm = payload.target_bpm or (current_features.bpm if current_features else None)
+            if reference_bpm and (not candidate_features or not candidate_features.bpm):
+                continue
+            if reference_bpm and bpm_difference(reference_bpm, candidate_features.bpm) > payload.bpm_tolerance:
+                continue
+            if current_features and current_features.language:
+                if candidate_features and candidate_features.language and normalize_language(candidate_features.language) != normalize_language(current_features.language):
+                    continue
+            if current_features and current_features.musical_key and candidate_features and director_key_score(current_features.musical_key, candidate_features.musical_key) < 0.45:
+                continue
+            details = director_track_score(current, candidate, payload.bpm_tolerance)
+            if candidate.artist.casefold() == current.artist.casefold():
+                details["score"] = round(details["score"] - 0.08, 4)
+            if candidate.id in recent_director_ids:
+                details["score"] = round(details["score"] - 0.12, 4)
+            if payload.target_bpm and candidate.features and candidate.features.bpm:
+                target_gap = bpm_difference(candidate.features.bpm, payload.target_bpm)
+                details["score"] = round(details["score"] + max(0, 0.15 - target_gap / 300), 4)
+            ranked.append((details["score"], candidate, details))
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        if not ranked:
+            break
+        _, next_track, transition = ranked[0]
+        if transition["score"] < 0.45:
+            break
+        selected.append(next_track)
+        remaining.pop(next_track.id)
+        duration += int(next_track.duration_seconds or 0)
+        current = next_track
+        artist_counts[next_track.artist.casefold()] = artist_counts.get(next_track.artist.casefold(), 0) + 1
+
+    items = []
+    for index, track in enumerate(selected):
+        details = None if index == 0 else director_track_score(selected[index - 1], track, payload.bpm_tolerance)
+        items.append({
+            "position": index,
+            "track": TrackRead.model_validate(track).model_dump(mode="json"),
+            "transition": details,
+        })
+
+    director_session = DirectorSession(
+        owner_id=owner_id,
+        seed_track_id=seed.id,
+        seed_playlist_id=payload.seed_playlist_id,
+        target_duration_seconds=None,
+        target_bpm=payload.target_bpm,
+    )
+    db.add(director_session)
+    db.flush()
+    for index, item in enumerate(items):
+        transition = item.get("transition") or {}
+        db.add(DirectorSessionTrack(
+            session_id=director_session.id,
+            track_id=item["track"]["id"],
+            position=index,
+            score=transition.get("score"),
+            transition=transition.get("transition"),
+        ))
+    db.commit()
+
+    transition_scores = [
+        float(item["transition"]["score"])
+        for item in items
+        if item.get("transition") and item["transition"].get("score") is not None
+    ]
+    missing_feature_count = sum(
+        1 for item in selected
+        if not item.features or not item.features.bpm or not item.features.musical_key
+    )
+    unknown_language_count = sum(
+        1 for item in selected
+        if seed.features and seed.features.language and (not item.features or not item.features.language)
+    )
+    warnings = []
+    if len(selected) < target_track_count:
+        warnings.append("The library did not contain enough strong transitions to reach the requested song count.")
+    if missing_feature_count:
+        warnings.append(f"{missing_feature_count} selected track(s) are missing BPM or key data.")
+    if unknown_language_count:
+        warnings.append(f"{unknown_language_count} selected track(s) have unverified language metadata.")
+    if not transition_scores:
+        warnings.append("Only the seed track met the current quality constraints.")
+
+    return {
+        "session_id": director_session.id,
+        "seed_track_id": seed.id,
+        "target_track_count": target_track_count,
+        "target_duration_seconds": duration,
+        "actual_duration_seconds": duration,
+        "candidate_pool_size": len(candidates),
+        "quality": {
+            "minimum_transition_score": round(min(transition_scores), 4) if transition_scores else None,
+            "average_transition_score": round(sum(transition_scores) / len(transition_scores), 4) if transition_scores else None,
+            "missing_feature_count": missing_feature_count,
+            "unknown_language_count": unknown_language_count,
+            "warnings": warnings,
+        },
+        "items": items,
+    }
+
+
+@router.post("/director/save", response_model=PlaylistRead, status_code=status.HTTP_201_CREATED)
+def save_director_mix(payload: DirectorSaveRequest, db: DbSession) -> Playlist:
+    owner_id = current_owner_id(db)
+    tracks = list(
+        db.scalars(
+            select(Track)
+            .join(Playlist, Playlist.id == Track.playlist_id)
+            .where(Playlist.owner_id == owner_id, Track.id.in_(payload.track_ids))
+        ).all()
+    )
+    tracks_by_id = {track.id: track for track in tracks}
+    ordered_ids = list(dict.fromkeys(payload.track_ids))
+    ordered_tracks = [tracks_by_id[track_id] for track_id in ordered_ids if track_id in tracks_by_id]
+    if not ordered_tracks:
+        raise HTTPException(status_code=422, detail="No valid tracks were supplied.")
+
+    cover = create_director_cover(payload.name)
+    playlist = Playlist(
+        owner_id=owner_id,
+        name=unique_director_name(payload.name, db, owner_id),
+        description=payload.description,
+        cover_filename=cover["filename"],
+        cover_path=cover["path"],
+        cover_content_type=cover["content_type"],
+    )
+    db.add(playlist)
+    db.flush()
+
+    for position, source_track in enumerate(ordered_tracks):
+        copied_track = Track(
+            playlist_id=playlist.id,
+            title=source_track.title,
+            artist=source_track.artist,
+            album=source_track.album,
+            lyrics=source_track.lyrics,
+            genre=source_track.genre,
+            duration_seconds=source_track.duration_seconds,
+            audio_filename=source_track.audio_filename,
+            audio_path=source_track.audio_path,
+            audio_content_type=source_track.audio_content_type,
+            cover_filename=source_track.cover_filename,
+            cover_path=source_track.cover_path,
+            cover_content_type=source_track.cover_content_type,
+            position=position,
+        )
+        db.add(copied_track)
+        db.flush()
+        if source_track.features:
+            db.add(TrackFeatures(
+                track_id=copied_track.id,
+                bpm=source_track.features.bpm,
+                musical_key=source_track.features.musical_key,
+                energy=source_track.features.energy,
+                danceability=source_track.features.danceability,
+                loudness=source_track.features.loudness,
+                language=source_track.features.language,
+                feature_source=source_track.features.feature_source,
+                analyzed_at=source_track.features.analyzed_at,
+            ))
+
+    db.commit()
+    db.refresh(playlist)
+    return playlist
+
+
+@router.post("/director/sessions")
+def create_director_session(payload: DirectorSaveRequest, db: DbSession) -> dict:
+    owner_id = current_owner_id(db)
+    tracks = list(
+        db.scalars(
+            select(Track)
+            .join(Playlist, Playlist.id == Track.playlist_id)
+            .where(Playlist.owner_id == owner_id, Track.id.in_(payload.track_ids))
+        ).all()
+    )
+    tracks_by_id = {track.id: track for track in tracks}
+    ordered_ids = [track_id for track_id in payload.track_ids if track_id in tracks_by_id]
+    if not ordered_ids:
+        raise HTTPException(status_code=422, detail="No valid tracks were supplied.")
+
+    session = DirectorSession(owner_id=owner_id, seed_track_id=ordered_ids[0])
+    db.add(session)
+    db.flush()
+    for position, track_id in enumerate(ordered_ids):
+        db.add(DirectorSessionTrack(session_id=session.id, track_id=track_id, position=position))
+    db.commit()
+    return {"id": session.id, "status": session.status, "track_ids": ordered_ids}
+
+
+@router.post("/director/sessions/{session_id}/feedback")
+def record_director_feedback(
+    session_id: int,
+    payload: DirectorFeedbackRequest,
+    db: DbSession,
+) -> dict:
+    owner_id = current_owner_id(db)
+    session = db.scalar(
+        select(DirectorSession).where(
+            DirectorSession.id == session_id,
+            DirectorSession.owner_id == owner_id,
+        )
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Director session not found.")
+
+    track_exists = db.scalar(
+        select(DirectorSessionTrack.id).where(
+            DirectorSessionTrack.session_id == session_id,
+            DirectorSessionTrack.track_id == payload.track_id,
+        )
+    )
+    if track_exists is None:
+        raise HTTPException(status_code=404, detail="Track is not part of this Director session.")
+
+    db.add(DirectorFeedback(
+        session_id=session_id,
+        track_id=payload.track_id,
+        event=payload.event,
+        listened_seconds=payload.listened_seconds,
+    ))
+    db.commit()
+    return {"status": "recorded", "session_id": session_id, "track_id": payload.track_id}
+
+
+@router.get("/director/sessions/{session_id}/queue")
+def get_adaptive_director_queue(session_id: int, db: DbSession) -> dict:
+    owner_id = current_owner_id(db)
+    session = db.scalar(
+        select(DirectorSession)
+        .where(DirectorSession.id == session_id, DirectorSession.owner_id == owner_id)
+        .options(selectinload(DirectorSession.tracks), selectinload(DirectorSession.feedback))
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Director session not found.")
+
+    feedback_by_track: dict[int, list[str]] = {}
+    for event in session.feedback:
+        feedback_by_track.setdefault(event.track_id, []).append(event.event)
+
+    track_ids = [item.track_id for item in session.tracks]
+    tracks = list(db.scalars(select(Track).options(selectinload(Track.features)).where(Track.id.in_(track_ids))).all())
+    tracks_by_id = {track.id: track for track in tracks}
+    ranked = []
+    for item in session.tracks:
+        track = tracks_by_id.get(item.track_id)
+        if track is None:
+            continue
+        events = feedback_by_track.get(track.id, [])
+        adjustment = sum({"like": 0.18, "replay": 0.25, "complete": 0.05, "skip": -0.30, "remove": -1.0}.get(event, 0) for event in events)
+        ranked.append({
+            "position": item.position,
+            "track": TrackRead.model_validate(track).model_dump(mode="json"),
+            "adaptive_score": round(float(item.score or 0.5) + adjustment, 4),
+            "feedback": events,
+        })
+
+    ranked.sort(key=lambda item: (item["adaptive_score"], -item["position"]), reverse=True)
+    return {"session_id": session.id, "status": session.status, "items": ranked}
+
+
+@router.post("/director/sessions/{session_id}/regenerate")
+def regenerate_director_next(
+    session_id: int,
+    payload: DirectorRegenerateRequest,
+    db: DbSession,
+) -> dict:
+    owner_id = current_owner_id(db)
+    session = db.scalar(
+        select(DirectorSession).where(
+            DirectorSession.id == session_id,
+            DirectorSession.owner_id == owner_id,
+        ).options(selectinload(DirectorSession.tracks), selectinload(DirectorSession.feedback))
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Director session not found.")
+
+    used_ids = {item.track_id for item in session.tracks}
+    current_id = payload.current_track_id or (session.tracks[-1].track_id if session.tracks else session.seed_track_id)
+    current = db.scalar(select(Track).options(selectinload(Track.features)).where(Track.id == current_id))
+    if current is None:
+        raise HTTPException(status_code=404, detail="Current track not found.")
+
+    candidates = list(
+        db.scalars(
+            select(Track)
+            .join(Playlist, Playlist.id == Track.playlist_id)
+            .options(selectinload(Track.features))
+            .where(Playlist.owner_id == owner_id, Track.id.not_in(used_ids))
+        ).all()
+    )
+    if not candidates:
+        raise HTTPException(status_code=404, detail="No unused library tracks are available.")
+
+    ensure_track_features(current, db)
+    for candidate in candidates:
+        ensure_track_features(candidate, db)
+    db.commit()
+
+    feedback_counts: dict[int, int] = {}
+    for event in session.feedback:
+        feedback_counts[event.track_id] = feedback_counts.get(event.track_id, 0) + (1 if event.event in {"like", "replay"} else -1)
+
+    ranked = []
+    for candidate in candidates:
+        if current.features and current.features.bpm:
+            if not candidate.features or not candidate.features.bpm or bpm_difference(current.features.bpm, candidate.features.bpm) > 8:
+                continue
+        if current.features and current.features.language:
+            if candidate.features and candidate.features.language and normalize_language(candidate.features.language) != normalize_language(current.features.language):
+                continue
+        if current.features and current.features.musical_key:
+            if not candidate.features or not candidate.features.musical_key or director_key_score(current.features.musical_key, candidate.features.musical_key) < 0.45:
+                continue
+        details = director_track_score(current, candidate)
+        if candidate.artist.casefold() == current.artist.casefold():
+            details["score"] = round(details["score"] - 0.08, 4)
+        details["score"] = round(details["score"] + feedback_counts.get(candidate.id, 0) * 0.05, 4)
+        ranked.append((details["score"], candidate, details))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    if not ranked or ranked[0][0] < 0.45:
+        raise HTTPException(status_code=404, detail="No strong unused transition is available.")
+    score, next_track, details = ranked[0]
+
+    item = DirectorSessionTrack(
+        session_id=session.id,
+        track_id=next_track.id,
+        position=len(session.tracks),
+        score=score,
+        transition=details.get("transition"),
+    )
+    db.add(item)
+    db.commit()
+    return {
+        "session_id": session.id,
+        "track": TrackRead.model_validate(next_track).model_dump(mode="json"),
+        "transition": details,
+    }
+
+
+@router.post("/director/discover")
+def discover_director_tracks(payload: DirectorDiscoverRequest, db: DbSession) -> dict:
+    seed = get_track_or_404(payload.seed_track_id, db)
+    owner_id = current_owner_id(db)
+    seed_owner = db.scalar(select(Playlist.owner_id).where(Playlist.id == seed.playlist_id))
+    if seed_owner != owner_id:
+        raise HTTPException(status_code=404, detail="Seed track not found.")
+    ensure_track_features(seed, db)
+    db.commit()
+
+    bpm = seed.features.bpm if seed.features else None
+    key = seed.features.musical_key if seed.features else None
+    parts = [seed.artist, seed.genre or "music"]
+    if payload.language:
+        parts.append(payload.language)
+    if payload.mood:
+        parts.append(payload.mood)
+    if bpm:
+        parts.append(f"around {round(bpm)} BPM")
+    if key:
+        parts.append(f"key {key}")
+    query = " ".join(str(part) for part in parts if part)
+
+    existing = {
+        (track.title.casefold(), track.artist.casefold())
+        for track in db.scalars(
+            select(Track).join(Playlist, Playlist.id == Track.playlist_id)
+            .where(Playlist.owner_id == owner_id)
+        ).all()
+    }
+    discovered = []
+    try:
+        with yt_dlp.YoutubeDL({
+            "quiet": True,
+            "noplaylist": True,
+            "extract_flat": True,
+            "socket_timeout": 20,
+        }) as ydl:
+            search = ydl.extract_info(f"ytsearch{max(payload.count * 3, 10)}:{query}", download=False)
+        entries = (search or {}).get("entries") or []
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Online discovery search failed: {exc}") from exc
+
+    for entry in entries:
+        if len(discovered) >= payload.count:
+            break
+        url = entry.get("webpage_url") or entry.get("original_url")
+        if not url and entry.get("id"):
+            url = f"https://www.youtube.com/watch?v={entry['id']}"
+        if not url:
+            continue
+        title = clean_imported_title(str(entry.get("title") or ""), str(entry.get("uploader") or ""))
+        artist = str(entry.get("uploader") or "Unknown artist").strip()
+        if (title.casefold(), artist.casefold()) in existing:
+            continue
+        existing.add((title.casefold(), artist.casefold()))
+        discovered.append({
+            "url": url,
+            "title": title,
+            "artist": artist,
+            "duration_seconds": entry.get("duration") or entry.get("duration_seconds"),
+            "thumbnail": entry.get("thumbnail"),
+        })
+    return {
+        "playlist_id": None,
+        "query": query,
+        "requested": payload.count,
+        "found": len(discovered),
+        "tracks": discovered,
+    }
+
+
+@router.post("/director/discover/create-playlist", response_model=PlaylistRead, status_code=status.HTTP_201_CREATED)
+def create_director_discovery_playlist(payload: DirectorDiscoverySaveRequest, db: DbSession) -> Playlist:
+    seed = get_track_or_404(payload.seed_track_id, db)
+    ensure_track_features(seed, db)
+    db.commit()
+
+    owner_id = current_owner_id(db)
+    cover = create_director_cover(payload.name or f"{seed.title} Discoveries")
+    playlist = Playlist(
+        owner_id=owner_id,
+        name=unique_director_name(payload.name or f"{seed.title} · {seed.artist} Discoveries", db, owner_id),
+        description="Online discoveries selected by Director.",
+        cover_filename=cover["filename"],
+        cover_path=cover["path"],
+        cover_content_type=cover["content_type"],
+    )
+    db.add(playlist)
+    db.flush()
+
+    imported_tracks = []
+    for item in payload.items:
+        if not re.match(r"^https?://(?:www\.)?(?:youtube\.com|youtu\.be)/", item.url, re.I):
+            continue
+        try:
+            imported = download_youtube_audio(
+                YouTubeDownloadRequest(url=item.url, playlist_id=playlist.id),
+                db,
+            )
+        except HTTPException:
+            continue
+
+        transition = director_track_score(seed, imported)
+        language_ok = (
+            not seed.features or not seed.features.language
+            or not imported.features or not imported.features.language
+            or normalize_language(imported.features.language) == normalize_language(seed.features.language)
+        )
+        bpm_ok = (
+            not seed.features or not seed.features.bpm
+            or imported.features and imported.features.bpm and bpm_difference(seed.features.bpm, imported.features.bpm) <= 8
+        )
+        key_ok = (
+            not seed.features or not seed.features.musical_key
+            or imported.features and imported.features.musical_key and director_key_score(seed.features.musical_key, imported.features.musical_key) >= 0.45
+        )
+        if not language_ok or not bpm_ok or not key_ok or transition["score"] < 0.42:
+            if imported.audio_path:
+                rejected_audio = Path(__file__).resolve().parents[1] / imported.audio_path
+                if rejected_audio.exists():
+                    rejected_audio.unlink()
+            db.delete(imported)
+            db.commit()
+            continue
+        imported_tracks.append(imported)
+
+    if not imported_tracks:
+        cover_path = Path(playlist.cover_path) if playlist.cover_path else None
+        db.delete(playlist)
+        db.commit()
+        if cover_path and cover_path.exists():
+            cover_path.unlink()
+        raise HTTPException(status_code=404, detail="No selected discoveries could be downloaded with strong matches.")
+
+    db.commit()
+    db.refresh(playlist)
+    return playlist
 
 
 @router.get("/listening/stats")
@@ -1304,8 +2163,21 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
             raise HTTPException(status_code=502, detail="The audio download did not produce a file.")
 
         metadata = read_audio_metadata(downloaded_path)
+        metadata.update(analyze_audio_features(downloaded_path))
+        metadata["language"] = info.get("language") or info.get("original_language")
         known_artist = metadata.get("artist") or info.get("artist")
         source_title = metadata.get("title") or title
+        if not metadata.get("bpm") or not metadata.get("key"):
+            try:
+                online_features = analyze_song(song=source_title, artist=known_artist)
+                if not metadata.get("bpm"):
+                    metadata["bpm"] = online_features.get("bpm")
+                if not metadata.get("key"):
+                    metadata["key"] = online_features.get("key")
+                if not metadata.get("genre"):
+                    metadata["genre"] = online_features.get("genre")
+            except Exception:
+                pass
         catalog = lookup_cover_art(catalog_title(source_title, known_artist), known_artist)
         final_artist = (
             known_artist or catalog.get("artist") or info.get("uploader") or "Unknown artist"
@@ -1338,8 +2210,13 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
         db.add(track)
         db.commit()
         db.refresh(track)
+        persist_track_features(track, metadata, db, "youtube_audio")
+        db.commit()
+        db.refresh(track)
         return track
     except HTTPException:
+        if 'downloaded_path' in locals() and downloaded_path.exists():
+            downloaded_path.unlink()
         raise
     except Exception as e:
         if 'downloaded_path' in locals() and downloaded_path.exists():

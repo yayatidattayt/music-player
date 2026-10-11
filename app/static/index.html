@@ -7,8 +7,8 @@
     <meta name="description" content="A simple place to keep the music you love." />
     <title>Side B — Playlist Manager</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=20261011-24" />
-    <script src="/static/app.js?v=20261011-24" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20261011-26" />
+    <script src="/static/app.js?v=20261011-26" defer></script>
   </head>
   <body class="auth-mode">
     <section id="auth-gate" class="auth-gate" aria-labelledby="auth-title">
@@ -26,17 +26,17 @@
           <h1 id="auth-title">Welcome back.</h1>
           <p id="auth-intro" class="auth-intro">Sign in to keep your playlists, songs, and listening history together.</p>
           <div class="auth-tabs" role="tablist" aria-label="Account access">
-            <button id="auth-login-tab" class="auth-tab is-active" type="button" role="tab" aria-selected="true">Log in</button>
-            <button id="auth-signup-tab" class="auth-tab" type="button" role="tab" aria-selected="false">Create account</button>
+            <button id="auth-login-tab" class="auth-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="auth-login-panel">Log in</button>
+            <button id="auth-signup-tab" class="auth-tab" type="button" role="tab" aria-selected="false" aria-controls="auth-signup-panel">Create account</button>
           </div>
-          <form id="auth-login-form" class="auth-form">
+          <form id="auth-login-form" class="auth-form" role="tabpanel" aria-labelledby="auth-login-tab" tabindex="0">
             <label for="login-email">Email</label>
             <input id="login-email" type="email" autocomplete="email" required placeholder="you@example.com" />
             <label for="login-password">Password</label>
             <input id="login-password" type="password" autocomplete="current-password" required placeholder="Your password" />
             <button class="button button-accent auth-submit" type="submit">Log in</button>
           </form>
-          <form id="auth-signup-form" class="auth-form" hidden>
+          <form id="auth-signup-form" class="auth-form" role="tabpanel" aria-labelledby="auth-signup-tab" tabindex="0" hidden>
             <label for="signup-name">Display name</label>
             <input id="signup-name" type="text" autocomplete="name" maxlength="80" required placeholder="Your name" />
             <label for="signup-email">Email</label>
@@ -102,6 +102,12 @@
           <span class="liked-songs-icon">✦</span>
           <span>Song Lab</span>
           <small>tempo · key · details</small>
+        </button>
+
+        <button id="director-button" class="sidebar-tool-button" type="button">
+          <span class="liked-songs-icon">✧</span>
+          <span>AI Director</span>
+          <small>build a listening flow</small>
         </button>
 
         <button id="room-button" class="sidebar-tool-button room-launch-button" type="button">
@@ -210,6 +216,47 @@
         <div class="dialog-actions">
           <button class="button button-quiet" type="button" data-close-dialog="song-lab-dialog">Close</button>
           <button class="button button-accent" type="submit" id="song-lab-submit">Analyze song</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="director-dialog" class="edit-dialog">
+      <form id="director-form" class="dialog-form">
+        <div class="dialog-topline">
+          <span class="eyebrow">AI Music Director</span>
+          <button class="dialog-close" type="button" data-close-dialog="director-dialog" aria-label="Close">×</button>
+        </div>
+        <h2>Build a listening flow</h2>
+        <p class="dialog-intro">Choose a song and let the deterministic music engine shape the next run.</p>
+        <label for="director-mode">How do you want to use Director?</label>
+        <select id="director-mode">
+          <option value="simple" selected>Simple · just make me a good mix</option>
+          <option value="musician">Musician · show detailed controls</option>
+        </select>
+        <label for="director-seed">Seed track</label>
+        <select id="director-seed" required></select>
+        <p id="director-seed-details" class="file-help">Choose a seed to inspect its musical details.</p>
+        <label for="director-track-count">How many songs?</label>
+        <input id="director-track-count" type="number" min="1" max="50" value="10" required />
+        <div id="director-musician-controls" hidden>
+          <label for="director-bpm">Target BPM <span class="optional">(optional)</span></label>
+          <input id="director-bpm" type="number" min="30" max="240" placeholder="120" />
+          <label for="director-bpm-tolerance">BPM tolerance</label>
+          <select id="director-bpm-tolerance">
+            <option value="4">Very tight · ±4 BPM</option>
+            <option value="8" selected>Balanced · ±8 BPM</option>
+            <option value="15">Flexible · ±15 BPM</option>
+          </select>
+        </div>
+        <label for="director-mood">Mood for online discoveries <span class="optional">(optional)</span></label>
+        <input id="director-mood" maxlength="80" placeholder="dark night-drive" />
+        <label for="director-language">Language for online discoveries <span class="optional">(optional)</span></label>
+        <input id="director-language" maxlength="40" placeholder="English" />
+        <div id="director-status" class="file-help" hidden aria-live="polite"></div>
+        <div id="director-result" class="song-lab-result" hidden></div>
+        <div class="dialog-actions">
+          <button class="button button-quiet" type="button" data-close-dialog="director-dialog">Close</button>
+          <button class="button button-accent" type="submit" id="director-submit">Generate mix</button>
         </div>
       </form>
     </dialog>
@@ -338,22 +385,40 @@
 
         <span id="player-current-time" class="player-time">0:00</span>
 
-        <input
-          id="player-progress"
-          class="player-progress"
-          type="range"
-          min="0"
-          max="100"
-          value="0"
-          step="0.1"
-          aria-label="Song progress"
-        />
+        <div class="player-progress-wrap">
+          <input
+            id="player-progress"
+            class="player-progress"
+            type="range"
+            min="0"
+            max="100"
+            value="0"
+            step="0.1"
+            aria-label="Song progress"
+          />
+          <span class="player-mini-wave" aria-hidden="true">
+            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+          </span>
+        </div>
 
         <span id="player-total-time" class="player-time">0:00</span>
       </div>
 
       <div class="player-options">
         <button id="player-mute" class="player-button volume-button" type="button" aria-label="Mute" title="Mute (M)">🔊</button>
+        
+        <button
+          id="equalizer-toggle"
+          class="player-button"
+          type="button"
+          aria-label="Open equalizer"
+          aria-expanded="false"
+          title="Equalizer"
+        >
+          EQ
+        </button>
+        
         <input
           id="player-volume"
           class="player-volume"
@@ -384,6 +449,40 @@
         >
           ×
         </button>
+      </div>
+
+      <div id="equalizer-panel" class="equalizer-panel" hidden aria-label="10-band equalizer">
+        <div class="equalizer-heading">
+          <span>
+            <strong>Equalizer</strong>
+            <small>Shape the sound</small>
+          </span>
+          <button id="equalizer-reset" class="player-button" type="button">Reset</button>
+        </div>
+
+        <div class="equalizer-presets" role="group" aria-label="Equalizer presets">
+          <button type="button" data-eq-preset="flat">Flat</button>
+          <button type="button" data-eq-preset="bass">Bass boost</button>
+          <button type="button" data-eq-preset="vocal">Vocal</button>
+          <button type="button" data-eq-preset="electronic">Electronic</button>
+          <button type="button" data-eq-preset="rock">Rock</button>
+          <button type="button" data-eq-preset="lofi">Lo-fi</button>
+          <button type="button" data-eq-preset="acoustic">Acoustic</button>
+          <button type="button" data-eq-preset="night">Night</button>
+        </div>
+
+        <div class="equalizer-bands">
+          <label><input data-eq-band="0" type="range" min="-12" max="12" step="1" value="0"><span>60</span></label>
+          <label><input data-eq-band="1" type="range" min="-12" max="12" step="1" value="0"><span>120</span></label>
+          <label><input data-eq-band="2" type="range" min="-12" max="12" step="1" value="0"><span>250</span></label>
+          <label><input data-eq-band="3" type="range" min="-12" max="12" step="1" value="0"><span>500</span></label>
+          <label><input data-eq-band="4" type="range" min="-12" max="12" step="1" value="0"><span>1k</span></label>
+          <label><input data-eq-band="5" type="range" min="-12" max="12" step="1" value="0"><span>2k</span></label>
+          <label><input data-eq-band="6" type="range" min="-12" max="12" step="1" value="0"><span>4k</span></label>
+          <label><input data-eq-band="7" type="range" min="-12" max="12" step="1" value="0"><span>8k</span></label>
+          <label><input data-eq-band="8" type="range" min="-12" max="12" step="1" value="0"><span>12k</span></label>
+          <label><input data-eq-band="9" type="range" min="-12" max="12" step="1" value="0"><span>16k</span></label>
+        </div>
       </div>
 
       <audio id="audio-engine" preload="metadata"></audio>

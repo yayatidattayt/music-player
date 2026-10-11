@@ -61,7 +61,11 @@ def home() -> FileResponse:
 
 @app.get("/health", tags=["Health"])
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "director_discovery_preview": "enabled",
+        "director_build": "20261011-26",
+    }
 
 
 app.include_router(playlists_router, prefix="/api")

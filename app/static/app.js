@@ -44,6 +44,7 @@ const state = {
   authStarted: false,
   currentUser: null,
   profileLoading: false,
+  directorSessionId: null,
 };
 
 const byId = (id) => document.getElementById(id);
@@ -56,6 +57,7 @@ const statusLight = document.querySelector(".status-light");
 const audioEngine = byId("audio-engine");
 const visualizer = byId("now-playing-visualizer");
 const topbarVisualizer = byId("topbar-visualizer");
+const miniWaveBars = [...document.querySelectorAll(".player-mini-wave i")];
 let savedSidebarState = localStorage.getItem("ydkmusic-sidebar-collapsed") === "true";
 const HOME_FEATURE_TRACK = {
   id: -1,
@@ -72,6 +74,7 @@ let playerTrack = null;
 let audioContext = null;
 let analyser = null;
 let audioSource = null;
+let equalizerFilters = [];
 let frequencyData = null;
 let bassEnergy = 0;
 let peakLevels = [];
@@ -80,6 +83,18 @@ let artThemeUrl = null;
 let previewFadeFrame = 0;
 let homePreviewFadeFrame = 0;
 const authVisualizerLevels = new Float32Array(88);
+const EQ_FREQUENCIES = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000, 16000];
+const EQ_STORAGE_KEY = "sideb-equalizer";
+const EQ_PRESETS = {
+  flat: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  bass: [5, 4, 3, 1, 0, 0, -1, -2, -2, -2],
+  vocal: [-2, -1, 0, 3, 4, 3, 1, 0, -1, -2],
+  electronic: [4, 3, 1, 0, -2, 2, 4, 3, 2, 1],
+  rock: [4, 3, 1, -1, -2, 1, 3, 4, 3, 2],
+  lofi: [3, 2, 0, -2, -1, 1, 3, 2, 0, -1],
+  acoustic: [2, 1, 0, 2, 3, 3, 2, 1, 1, 0],
+  night: [-3, -2, -1, 1, 2, 2, 1, 0, -2, -3],
+};
 
 function setAuthMode(mode) {
   const loginMode = mode === "login";
@@ -782,13 +797,27 @@ function setupAudioAnalyzer() {
   if (!AudioContextClass) return;
 
   audioContext = new AudioContextClass();
+  audioSource = audioContext.createMediaElementSource(audioEngine);
+
+  let previousNode = audioSource;
+  equalizerFilters = EQ_FREQUENCIES.map((frequency) => {
+    const filter = audioContext.createBiquadFilter();
+    filter.type = "peaking";
+    filter.frequency.value = frequency;
+    filter.Q.value = 1.1;
+    filter.gain.value = 0;
+    previousNode.connect(filter);
+    previousNode = filter;
+    return filter;
+  });
+
   analyser = audioContext.createAnalyser();
   analyser.fftSize = 128;
   analyser.smoothingTimeConstant = 0.82;
-  audioSource = audioContext.createMediaElementSource(audioEngine);
-  audioSource.connect(analyser);
+  previousNode.connect(analyser);
   analyser.connect(audioContext.destination);
   frequencyData = new Uint8Array(analyser.frequencyBinCount);
+  restoreEqualizer();
 }
 
 function drawAuthVisualizer() {
@@ -845,6 +874,7 @@ function drawAuthVisualizer() {
 function drawVisualizer() {
   drawAuthVisualizer();
   drawTopbarVisualizer();
+  updateMiniWave();
   if (!visualizer) {
     requestAnimationFrame(drawVisualizer);
     return;
@@ -908,6 +938,20 @@ function drawVisualizer() {
   context.fillStyle = glow;
   context.fillRect(0, 0, bounds.width, bounds.height);
   requestAnimationFrame(drawVisualizer);
+}
+
+function updateMiniWave() {
+  if (!miniWaveBars.length) return;
+  const playing = playerTrack && !audioEngine.paused && analyser && frequencyData;
+  if (playing) analyser.getByteFrequencyData(frequencyData);
+  miniWaveBars.forEach((bar, index) => {
+    const edge = Math.sin(((index + 1) / (miniWaveBars.length + 1)) * Math.PI);
+    const bin = Math.min(frequencyData?.length - 1 || 0, Math.floor((index / miniWaveBars.length) * (frequencyData?.length || 1) * .9));
+    const raw = playing ? (frequencyData[bin] || 0) / 255 : .08;
+    const level = Math.pow(raw, .72) * (.35 + edge * .9);
+    bar.style.setProperty("--wave-height", `${Math.max(1.5, level * 12)}px`);
+    bar.style.opacity = String(.18 + edge * (playing ? .72 : .3));
+  });
 }
 
 function drawTopbarVisualizer() {
@@ -1181,6 +1225,18 @@ async function api(path, options = {}) {
     throw new Error(message);
   }
   return data;
+}
+
+function directorFeedback(event, track = playerTrack) {
+  if (!state.directorSessionId || !track?.id || track.id < 1) return;
+  void api(`/api/director/sessions/${state.directorSessionId}/feedback`, {
+    method: "POST",
+    body: JSON.stringify({
+      track_id: track.id,
+      event,
+      listened_seconds: Math.round(audioEngine.currentTime || state.listenProgress || 0),
+    }),
+  }).catch(() => { /* Director feedback is optional and never interrupts playback. */ });
 }
 
 function formatMinutesHeard(seconds) {
@@ -1778,6 +1834,7 @@ async function playTrack(track, options = {}) {
   }
 
   if (playerTrack?.id > 0 && playerTrack.id !== track.id) {
+    if (audioEngine.currentTime < 20) directorFeedback("skip", playerTrack);
     void flushListeningTime(playerTrack.id);
   }
   playerTrack = track;
@@ -2097,9 +2154,11 @@ async function loadHome() {
   try {
     state.homePlaylists = await Promise.all(state.playlists.map((playlist) => api(`/api/playlists/${playlist.id}`)));
     state.stats = await api("/api/listening/stats");
-    const missingGenreTracks = state.homePlaylists.flatMap((playlist) => playlist.tracks || []).filter((track) => !track.genre);
-    if (missingGenreTracks.length) {
-      await Promise.all(missingGenreTracks.map((track) => api(`/api/tracks/${track.id}/catalog-metadata`, { method: "POST" }).catch(() => null)));
+    const missingMetadataTracks = state.homePlaylists
+      .flatMap((playlist) => playlist.tracks || [])
+      .filter((track) => !track.genre || !track.album || !track.cover_url);
+    if (missingMetadataTracks.length) {
+      await Promise.all(missingMetadataTracks.map((track) => api(`/api/tracks/${track.id}/catalog-metadata`, { method: "POST" }).catch(() => null)));
       state.homePlaylists = await Promise.all(state.playlists.map((playlist) => api(`/api/playlists/${playlist.id}`)));
     }
     renderHome();
@@ -2647,6 +2706,161 @@ byId("song-lab-button").addEventListener("click", () => {
   byId("song-lab-dialog").showModal();
   byId("song-lab-query").focus();
 });
+
+function openDirectorDialog() {
+  const tracks = state.activePlaylist?.tracks || [];
+  if (!tracks.length) return showToast("Open a playlist with tracks first.", true);
+  byId("director-seed").innerHTML = tracks.map((track) =>
+    `<option value="${track.id}">${escapeHtml(track.title)} — ${escapeHtml(track.artist)}</option>`
+  ).join("");
+  byId("director-result").hidden = true;
+  byId("director-mode").value = "simple";
+  byId("director-musician-controls").hidden = true;
+  byId("director-track-count").value = "10";
+  byId("director-bpm").value = "";
+  byId("director-bpm-tolerance").value = "8";
+  byId("director-mood").value = "";
+  byId("director-language").value = "";
+  byId("director-status").hidden = true;
+  byId("director-status").textContent = "";
+  updateDirectorSeedDetails();
+  byId("director-dialog").showModal();
+}
+
+async function updateDirectorSeedDetails() {
+  const track = (state.activePlaylist?.tracks || []).find((item) => item.id === Number(byId("director-seed").value));
+  const details = byId("director-seed-details");
+  if (!track) return;
+  if (!track.features && track.audio_url && track.id > 0) {
+    details.textContent = "Analyzing this track’s BPM and key…";
+    try {
+      const analyzed = await api(`/api/tracks/${track.id}/analyze-features`, { method: "POST" });
+      track.features = analyzed.features;
+    } catch {
+      // Older or unavailable files remain usable with reduced scoring confidence.
+    }
+  }
+  const features = track.features || {};
+  const bpm = features.bpm ? `${Math.round(features.bpm)} BPM` : "BPM unknown";
+  const key = features.musical_key || "key unknown";
+  const genre = track.genre || "uncategorized";
+  details.textContent = `${bpm} · ${key} · ${genre}`;
+  const mood = byId("director-mood");
+  if (!mood.value.trim()) mood.value = genre === "uncategorized" ? "similar mood" : `${genre} mood`;
+  if (features.language && !byId("director-language").value.trim()) {
+    byId("director-language").value = features.language;
+  }
+}
+
+async function generateDirectorMix() {
+  const seedTrackId = Number(byId("director-seed").value);
+  const requestedTrackCount = Math.min(50, Math.max(1, Number(byId("director-track-count").value) || 10));
+  const submit = byId("director-submit");
+  const resultBox = byId("director-result");
+  submit.disabled = true;
+  submit.textContent = "Building…";
+  resultBox.hidden = false;
+  resultBox.innerHTML = "<p>Scoring transitions and building your flow…</p>";
+  try {
+    const body = {
+      seed_track_id: seedTrackId,
+      seed_playlist_id: state.activeId || null,
+      target_track_count: requestedTrackCount,
+      target_bpm: byId("director-mode").value === "musician" ? (Number(byId("director-bpm").value) || null) : null,
+      bpm_tolerance: byId("director-mode").value === "musician" ? Number(byId("director-bpm-tolerance").value) : 20,
+      max_tracks: 50,
+    };
+    const mix = await api("/api/director/generate", { method: "POST", body: JSON.stringify(body) });
+    state.directorSessionId = mix.session_id || null;
+    const tracks = mix.items || [];
+    const qualityWarnings = mix.quality?.warnings || [];
+    resultBox.innerHTML = `
+      <p><strong>${tracks.length} songs · about ${Math.round((mix.actual_duration_seconds || 0) / 60)} minutes</strong></p>
+      ${qualityWarnings.length ? `<div class="director-warnings">${qualityWarnings.map((warning) => `<p>⚠ ${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
+      <ol>${tracks.map((item) => `<li><strong>${escapeHtml(item.track.title)}</strong> — ${escapeHtml(item.track.artist)}${item.transition ? `<small> · ${escapeHtml(item.transition.transition || "Transition")}</small>` : ""}</li>`).join("")}</ol>
+      <div class="dialog-actions">
+        <button class="button button-quiet" type="button" id="director-discover">Find 15 online discoveries</button>
+        <button class="button button-accent" type="button" id="director-save">Save as playlist</button>
+      </div>`;
+    byId("director-save").addEventListener("click", async () => {
+      const name = window.prompt("Name this mix", "Director Mix");
+      if (!name) return;
+      try {
+        await api("/api/director/save", { method: "POST", body: JSON.stringify({ name, description: "Generated by AI Music Director.", track_ids: tracks.map((item) => item.track.id) }) });
+        showToast("Director mix saved as a playlist.");
+        byId("director-dialog").close();
+        await loadPlaylists(state.activeId);
+      } catch (error) {
+        showToast(error.message || "Could not save the Director mix.", true);
+      }
+    });
+    byId("director-discover").addEventListener("click", async () => {
+      const discoveryButton = byId("director-discover");
+      const status = byId("director-status");
+      discoveryButton.disabled = true;
+      status.hidden = false;
+      status.textContent = "Searching online for matching songs…";
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        status.textContent = "Fetching candidate results…";
+        const discovery = await api("/api/director/discover", { method: "POST", body: JSON.stringify({ seed_track_id: seedTrackId, mood: byId("director-mood").value.trim() || null, language: byId("director-language").value.trim() || null, count: 15 }) });
+        if (!discovery.tracks?.length) throw new Error("No new songs were found outside your existing library.");
+        status.textContent = `${discovery.tracks.length} new songs found. Nothing has been added yet.`;
+        const discoveryItems = discovery.tracks;
+        resultBox.insertAdjacentHTML("beforeend", `
+          <section class="director-discoveries">
+            <h3>New discoveries</h3>
+            <p>These songs are not in your existing playlists.</p>
+            <ol>${discoveryItems.map((item) => `<li><strong>${escapeHtml(item.title)}</strong> — ${escapeHtml(item.artist)}</li>`).join("")}</ol>
+            <button class="button button-accent" type="button" id="director-create-discovery-playlist">Create playlist from these songs</button>
+          </section>`);
+        byId("director-create-discovery-playlist").addEventListener("click", async () => {
+          const createButton = byId("director-create-discovery-playlist");
+          createButton.disabled = true;
+          status.textContent = "Downloading and analyzing your selected discoveries…";
+          const name = window.prompt("Name this discovery playlist", "Director Discoveries");
+          if (!name) {
+            createButton.disabled = false;
+            status.textContent = "Songs are still only shown as suggestions.";
+            return;
+          }
+          try {
+            const created = await api("/api/director/discover/create-playlist", {
+              method: "POST",
+              body: JSON.stringify({ seed_track_id: seedTrackId, name, items: discoveryItems.map((item) => ({ url: item.url, title: item.title, artist: item.artist })) }),
+            });
+            await loadPlaylists(created.id);
+            showToast(`${created.tracks?.length || discoveryItems.length} discoveries saved as a playlist.`);
+            status.textContent = "Playlist created.";
+          } catch (error) {
+            status.textContent = error.message || "Could not create the discovery playlist.";
+            createButton.disabled = false;
+          }
+        });
+      } catch (error) {
+        status.textContent = error.message || "Online discovery failed.";
+        showToast(status.textContent, true);
+      } finally {
+        discoveryButton.disabled = false;
+      }
+    });
+  } catch (error) {
+    resultBox.innerHTML = `<p class="song-lab-error">${escapeHtml(error.message || "Director failed.")}</p>`;
+  } finally {
+    submit.disabled = false;
+    submit.textContent = "Generate mix";
+  }
+}
+
+byId("director-button").addEventListener("click", openDirectorDialog);
+byId("director-mode").addEventListener("change", () => {
+  byId("director-musician-controls").hidden = byId("director-mode").value !== "musician";
+});
+byId("director-seed").addEventListener("change", updateDirectorSeedDetails);
+byId("director-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await generateDirectorMix();
+});
 byId("song-lab-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   await analyzeSongFromLab();
@@ -2960,6 +3174,7 @@ audioEngine.addEventListener("pause", () => {
 });
 
 audioEngine.addEventListener("ended", () => {
+  directorFeedback("complete", playerTrack);
   stopLyricsClock();
   playNextTrack();
 });
@@ -2968,6 +3183,67 @@ configureMediaSession();
 visualizer.hidden = true;
 drawVisualizer();
 window.addEventListener("pagehide", flushListeningTimeOnExit);
+
+function equalizerValues() {
+  return equalizerFilters.map((filter) => filter.gain.value);
+}
+
+function applyEqualizer(values) {
+  if (!equalizerFilters.length) return;
+
+  equalizerFilters.forEach((filter, index) => {
+    filter.gain.value = Math.max(-12, Math.min(12, Number(values[index] ?? 0)));
+  });
+
+  document.querySelectorAll("[data-eq-band]").forEach((input, index) => {
+    input.value = String(equalizerFilters[index]?.gain.value ?? 0);
+  });
+
+  localStorage.setItem(EQ_STORAGE_KEY, JSON.stringify(equalizerValues()));
+}
+
+function restoreEqualizer() {
+  const saved = JSON.parse(localStorage.getItem(EQ_STORAGE_KEY) || "null");
+  const values = Array.isArray(saved) && saved.length === EQ_FREQUENCIES.length
+    ? saved
+    : EQ_PRESETS.flat;
+  applyEqualizer(values);
+}
+
+function setEqualizerPreset(name) {
+  setupAudioAnalyzer();
+  applyEqualizer(EQ_PRESETS[name] || EQ_PRESETS.flat);
+  document.querySelectorAll("[data-eq-preset]").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.eqPreset === name);
+  });
+}
+
+byId("equalizer-toggle").addEventListener("click", () => {
+  setupAudioAnalyzer();
+  restoreEqualizer();
+  const panel = byId("equalizer-panel");
+  const button = byId("equalizer-toggle");
+  const opening = panel.hidden;
+  panel.hidden = !opening;
+  button.setAttribute("aria-expanded", String(opening));
+  button.setAttribute("aria-label", opening ? "Close equalizer" : "Open equalizer");
+});
+
+byId("equalizer-reset").addEventListener("click", () => {
+  setEqualizerPreset("flat");
+});
+
+document.querySelectorAll("[data-eq-band]").forEach((input) => {
+  input.addEventListener("input", () => {
+    setupAudioAnalyzer();
+    applyEqualizer([...document.querySelectorAll("[data-eq-band]")].map((band) => Number(band.value)));
+    document.querySelectorAll("[data-eq-preset]").forEach((button) => button.classList.remove("is-active"));
+  });
+});
+
+document.querySelectorAll("[data-eq-preset]").forEach((button) => {
+  button.addEventListener("click", () => setEqualizerPreset(button.dataset.eqPreset));
+});
 
 byId("player-play").addEventListener("click", async () => {
   if (!playerTrack) return;
@@ -3235,6 +3511,7 @@ byId("now-playing-like").addEventListener("click", async () => {
   if (!playerTrack) return;
 
   try {
+    directorFeedback("like", playerTrack);
     const updatedTrack = await api(`/api/tracks/${playerTrack.id}/like`, {
       method: "PATCH",
     });

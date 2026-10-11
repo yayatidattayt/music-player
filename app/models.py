@@ -1,7 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -114,6 +114,90 @@ class Track(Base):
         return f"/covers/{filename}"
 
     playlist: Mapped[Playlist] = relationship(back_populates="tracks")
+    features: Mapped["TrackFeatures | None"] = relationship(
+        back_populates="track",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+
+class TrackFeatures(Base):
+    __tablename__ = "track_features"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+
+    track_id: Mapped[int] = mapped_column(
+        ForeignKey("tracks.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    bpm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    musical_key: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    energy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    danceability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    loudness: Mapped[float | None] = mapped_column(Float, nullable=True)
+    language: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    feature_source: Mapped[str] = mapped_column(
+        String(40),
+        nullable=False,
+        default="unknown",
+    )
+
+    analyzed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    track: Mapped["Track"] = relationship(back_populates="features")
+
+
+class DirectorSession(Base):
+    __tablename__ = "director_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    seed_track_id: Mapped[int | None] = mapped_column(ForeignKey("tracks.id", ondelete="SET NULL"), nullable=True)
+    seed_playlist_id: Mapped[int | None] = mapped_column(ForeignKey("playlists.id", ondelete="SET NULL"), nullable=True)
+    target_duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_bpm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    tracks: Mapped[list["DirectorSessionTrack"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan", order_by="DirectorSessionTrack.position"
+    )
+    feedback: Mapped[list["DirectorFeedback"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
+
+
+class DirectorSessionTrack(Base):
+    __tablename__ = "director_session_tracks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("director_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    transition: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
+    session: Mapped[DirectorSession] = relationship(back_populates="tracks")
+
+
+class DirectorFeedback(Base):
+    __tablename__ = "director_feedback"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("director_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), nullable=False)
+    event: Mapped[str] = mapped_column(String(30), nullable=False)
+    listened_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    session: Mapped[DirectorSession] = relationship(back_populates="feedback")
 
 
 class ListeningEvent(Base):

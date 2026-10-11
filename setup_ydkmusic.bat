@@ -53,7 +53,7 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-type nul > ".venv\.ydkmusic-dependencies-installed"
+type nul > ".venv\.ydkmusic-dependencies-installed-v3"
 
 where ffmpeg >nul 2>&1
 if errorlevel 1 (
