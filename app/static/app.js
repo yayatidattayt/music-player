@@ -81,6 +81,7 @@ let audioAnalyserActive = false;
 let bassEnergy = 0;
 let bassPunch = 0;
 let coverVisualizerEnabled = localStorage.getItem("sideb-cover-visualizer") !== "false";
+let coverVisualizerBeforeLyrics = null;
 let coverVisualizerLevels = [];
 let peakLevels = [];
 let artThemeRequest = 0;
@@ -1933,12 +1934,21 @@ function closeNowPlaying() {
   visualizer.hidden = true;
   byId("lyrics-panel").hidden = true;
   byId("lyrics-toggle").setAttribute("aria-expanded", "false");
+  if (coverVisualizerBeforeLyrics !== null) {
+    coverVisualizerEnabled = coverVisualizerBeforeLyrics;
+    coverVisualizerBeforeLyrics = null;
+  }
 }
 
 function closeLyricsPanel() {
   const panel = byId("lyrics-panel");
   panel.hidden = true;
   byId("lyrics-toggle").setAttribute("aria-expanded", "false");
+  if (coverVisualizerBeforeLyrics !== null) {
+    coverVisualizerEnabled = coverVisualizerBeforeLyrics;
+    coverVisualizerBeforeLyrics = null;
+    updateNowPlayingControls();
+  }
 }
 
 function updateNowPlayingControls() {
@@ -3634,7 +3644,16 @@ byId("lyrics-toggle").addEventListener("click", () => {
   const isOpen = !panel.hidden;
   panel.hidden = isOpen;
   byId("lyrics-toggle").setAttribute("aria-expanded", String(!isOpen));
-  if (!isOpen) syncLyrics();
+  if (!isOpen) {
+    coverVisualizerBeforeLyrics = coverVisualizerEnabled;
+    coverVisualizerEnabled = false;
+    updateNowPlayingControls();
+    syncLyrics();
+  } else if (coverVisualizerBeforeLyrics !== null) {
+    coverVisualizerEnabled = coverVisualizerBeforeLyrics;
+    coverVisualizerBeforeLyrics = null;
+    updateNowPlayingControls();
+  }
 });
 
 byId("lyrics-close").addEventListener("click", closeLyricsPanel);
