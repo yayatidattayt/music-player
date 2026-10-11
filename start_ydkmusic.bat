@@ -4,39 +4,31 @@ cd /d "%~dp0"
 
 echo Starting ydkmusic...
 
-where py >nul 2>&1
-if errorlevel 1 (
-    echo Python is not installed yet.
-    echo Please double-click setup_ydkmusic.bat once, then run this file again.
+if not exist ".venv\Scripts\python.exe" (
+    echo The private Python environment is missing.
+    echo Run setup_ydkmusic.bat first, then run this file again.
     pause
     exit /b 1
 )
 
-if not exist ".venv\Scripts\python.exe" (
-    echo Creating the Python environment...
-    py -m venv .venv
-    if errorlevel 1 (
-        echo Could not create the Python environment. Make sure Python is installed.
-        pause
-        exit /b 1
-    )
+".venv\Scripts\python.exe" -c "import fastapi, uvicorn" >nul 2>&1
+if errorlevel 1 (
+    echo Project packages are missing or incomplete.
+    echo Run setup_ydkmusic.bat first, then run this file again.
+    pause
+    exit /b 1
 )
 
-if not exist ".venv\.ydkmusic-dependencies-installed-v4" (
-    echo Installing required packages for the first run...
-    ".venv\Scripts\python.exe" -m pip install -r requirements.txt
-    if errorlevel 1 (
-        echo Package installation failed.
-        pause
-        exit /b 1
-    )
-    type nul > ".venv\.ydkmusic-dependencies-installed-v4"
+where powershell >nul 2>&1
+if errorlevel 1 (
+    echo Windows PowerShell was not found. This Windows installation cannot start the browser automatically.
+    pause
+    exit /b 1
 )
 
 set "APP_PORT=8000"
 set "HEALTH_FILE=%TEMP%\ydkmusic-health.json"
-curl.exe --fail --silent http://127.0.0.1:8000/health > "%HEALTH_FILE%" 2>nul
-findstr /C:"director_discovery_preview" "%HEALTH_FILE%" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8000/health' -TimeoutSec 2 | Select-Object -ExpandProperty Content | Set-Content -Encoding UTF8 '%HEALTH_FILE%'; exit 0 } catch { exit 1 }" >nul 2>&1
 if not errorlevel 1 goto :server_ready
 
 netstat -ano | findstr /R /C:":8000 .*LISTENING" >nul 2>&1
@@ -52,12 +44,24 @@ if not errorlevel 1 (
 )
 
 echo Opening the website. Keep the server window open while using it.
-start "ydkmusic server" cmd /k ""%CD%\.venv\Scripts\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port %APP_PORT% --reload"
-timeout /t 3 /nobreak >nul
+start "ydkmusic server" /D "%CD%" cmd /k ""%CD%\.venv\Scripts\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port %APP_PORT%"
+
+set /a WAIT_COUNT=0
+:wait_for_server
+timeout /t 1 /nobreak >nul
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:%APP_PORT%/health' -TimeoutSec 2 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>&1
+if not errorlevel 1 goto :server_ready
+set /a WAIT_COUNT+=1
+if %WAIT_COUNT% GEQ 20 (
+    echo.
+    echo The server did not start. Read the open ^"ydkmusic server^" window for the error.
+    pause
+    exit /b 1
+)
+goto :wait_for_server
 
 :server_ready
-timeout /t 3 /nobreak >nul
-start "" "http://127.0.0.1:%APP_PORT%"
+start "" "http://127.0.0.1:%APP_PORT%/"
 
 echo ydkmusic is running at http://127.0.0.1:%APP_PORT%
 echo.
