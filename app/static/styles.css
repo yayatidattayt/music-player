@@ -5312,24 +5312,11 @@ body.is-audio-playing .player-mini-wave i { animation-play-state: running; }
 /* Lyrics is a drawer, not a layout mode. Keep the artwork geometry square so
    opening it cannot squeeze the circular visualizer into an ellipse. */
 @media (min-width: 701px) {
-  .now-playing {
-    position: relative !important;
-  }
-  .now-playing > .lyrics-panel:not([hidden]) {
-    position: fixed !important;
-    top: 96px !important;
-    right: clamp(18px, 3vw, 44px) !important;
-    width: min(360px, 31vw) !important;
-    height: min(600px, calc(100vh - 128px)) !important;
-    margin: 0 !important;
-    z-index: 100 !important;
-  }
   .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-content {
-    width: min(100%, 1040px) !important;
+    width: min(100%, 1000px) !important;
     margin-inline: auto !important;
     grid-template-columns: minmax(220px, 420px) minmax(0, 520px) !important;
     column-gap: clamp(42px, 6vw, 76px) !important;
-    transform: none !important;
   }
   .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-art-stage {
     width: min(420px, 100%) !important;
