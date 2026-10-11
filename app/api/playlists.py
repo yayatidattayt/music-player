@@ -854,10 +854,11 @@ def analyze_song(song: str = Query(..., min_length=2, max_length=160), artist: s
     # Search result snippets often carry the BPM/key published by specialist
     # music sites even when their pages do not expose a public API.
     web_matches = []
+    exact_recording = " ".join(part for part in (song, artist_query) if part)
     for search_url, source_name in (
-        (f"https://www.google.com/search?q={quote('site:songbpm.com ' + song)}", "SongBPM via Google"),
-        (f"https://www.google.com/search?q={quote(song + ' BPM key')}", "Google web results"),
-        (f"https://html.duckduckgo.com/html/?q={quote(song + ' BPM key')}", "DuckDuckGo web results"),
+        (f"https://www.google.com/search?q={quote('site:songbpm.com ' + exact_recording)}", "SongBPM via Google"),
+        (f"https://www.google.com/search?q={quote(exact_recording + ' BPM key')}", "Google web results"),
+        (f"https://html.duckduckgo.com/html/?q={quote(exact_recording + ' BPM key')}", "DuckDuckGo web results"),
     ):
         try:
             request = Request(search_url, headers={"User-Agent": "Mozilla/5.0 Side B Song Lab"})
@@ -1853,11 +1854,19 @@ def discover_director_tracks(payload: DirectorDiscoverRequest, db: DbSession) ->
     # Start with a public catalog/web search so BPM and key can be checked
     # before asking YouTube for a playable result. This avoids treating a
     # loosely matching YouTube title as a valid Director recommendation.
-    catalog_query = " ".join(part for part in (
-        seed.genre or "music",
-        payload.mood or "",
-        payload.language or "",
-    ) if part).strip()
+    catalog_terms = []
+    if seed.genre and seed.genre.casefold() not in {"music", "unknown", "uncategorized"}:
+        catalog_terms.extend(seed.genre.split())
+    if payload.mood:
+        mood_terms = [word for word in re.findall(r"[\w-]+", payload.mood) if word.casefold() not in {"music", "mood", "similar", "same"}]
+        catalog_terms.extend(mood_terms)
+    if not catalog_terms:
+        catalog_terms.extend((seed.artist, seed.title))
+    elif seed.genre and seed.genre.casefold() in {"music", "unknown", "uncategorized"}:
+        # Generic imported genres such as "Music" are not useful search
+        # terms. Anchor catalog discovery to the actual recording instead.
+        catalog_terms = [seed.artist, seed.title, *catalog_terms]
+    catalog_query = " ".join(part for part in catalog_terms if part).strip()
     try:
         catalog_request = Request(
             "https://itunes.apple.com/search?" + urlencode({
@@ -1872,7 +1881,7 @@ def discover_director_tracks(payload: DirectorDiscoverRequest, db: DbSession) ->
     except (HTTPError, URLError, TimeoutError, ValueError, OSError):
         catalog_entries = []
 
-    for entry in catalog_entries:
+    for entry in catalog_entries[:max(20, min(60, payload.count * 4))]:
         if len(discovered) >= payload.count:
             break
         title = str(entry.get("trackName") or "").strip()
@@ -1888,6 +1897,9 @@ def discover_director_tracks(payload: DirectorDiscoverRequest, db: DbSession) ->
         if bpm and (not online_bpm or bpm_difference(float(bpm), float(online_bpm)) > 8):
             continue
         if key and (not online_key or director_key_score(key, str(online_key)) < 0.45):
+            continue
+        online_language = online.get("language")
+        if payload.language and online_language and normalize_language(str(online_language)) != normalize_language(payload.language):
             continue
         try:
             with yt_dlp.YoutubeDL({
@@ -1916,6 +1928,7 @@ def discover_director_tracks(payload: DirectorDiscoverRequest, db: DbSession) ->
             "thumbnail": youtube_entry.get("thumbnail"),
             "bpm": online_bpm,
             "key": online_key,
+            "language": online_language,
             "match_source": online.get("source") or "web catalog",
         })
 
@@ -1954,6 +1967,22 @@ def discover_director_tracks(payload: DirectorDiscoverRequest, db: DbSession) ->
         artist = str(entry.get("uploader") or "Unknown artist").strip()
         if (title.casefold(), artist.casefold()) in existing:
             continue
+        # YouTube titles are only candidate names. Keep a result out of the
+        # preview unless an independent online metadata lookup verifies its
+        # BPM and key against the seed.
+        try:
+            online = analyze_song(song=title, artist=artist)
+        except Exception:
+            continue
+        online_bpm = online.get("bpm")
+        online_key = online.get("key")
+        if bpm and (not online_bpm or bpm_difference(float(bpm), float(online_bpm)) > 8):
+            continue
+        if key and (not online_key or director_key_score(key, str(online_key)) < 0.45):
+            continue
+        online_language = online.get("language")
+        if payload.language and online_language and normalize_language(str(online_language)) != normalize_language(payload.language):
+            continue
         existing.add((title.casefold(), artist.casefold()))
         discovered.append({
             "url": url,
@@ -1961,6 +1990,10 @@ def discover_director_tracks(payload: DirectorDiscoverRequest, db: DbSession) ->
             "artist": artist,
             "duration_seconds": entry.get("duration") or entry.get("duration_seconds"),
             "thumbnail": entry.get("thumbnail"),
+            "bpm": online_bpm,
+            "key": online_key,
+            "language": online_language,
+            "match_source": online.get("source") or "online metadata",
         })
     return {
         "playlist_id": None,

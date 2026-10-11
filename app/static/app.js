@@ -2827,16 +2827,16 @@ async function generateDirectorMix() {
       status.textContent = "Searching online for matching songs…";
       try {
         await new Promise((resolve) => setTimeout(resolve, 250));
-        status.textContent = "Fetching candidate results…";
+        status.textContent = "Checking online BPM and key data, then matching YouTube results…";
         const discovery = await api("/api/director/discover", { method: "POST", body: JSON.stringify({ seed_track_id: seedTrackId, mood: byId("director-mood").value.trim() || null, language: byId("director-language").value.trim() || null, count: 15 }) });
-        if (!discovery.tracks?.length) throw new Error("No new songs were found outside your existing library.");
+        if (!discovery.tracks?.length) throw new Error("No songs with verifiable matching BPM and key were found this time. Try another seed or search again later.");
         status.textContent = `${discovery.tracks.length} new songs found. Nothing has been added yet.`;
         const discoveryItems = discovery.tracks;
         resultBox.insertAdjacentHTML("beforeend", `
           <section class="director-discoveries">
             <h3>New discoveries</h3>
             <p>These songs are not in your existing playlists.</p>
-            <ol>${discoveryItems.map((item) => `<li><strong>${escapeHtml(item.title)}</strong> — ${escapeHtml(item.artist)}</li>`).join("")}</ol>
+            <ol>${discoveryItems.map((item) => `<li><strong>${escapeHtml(item.title)}</strong> — ${escapeHtml(item.artist)}<small> · ${item.bpm ? `${Math.round(item.bpm)} BPM` : "BPM unverified"}${item.key ? ` · ${escapeHtml(item.key)}` : " · key unverified"}${item.language ? ` · ${escapeHtml(item.language)}` : " · language unverified"}</small></li>`).join("")}</ol>
             <button class="button button-accent" type="button" id="director-create-discovery-playlist">Create playlist from these songs</button>
           </section>`);
         byId("director-create-discovery-playlist").addEventListener("click", async () => {

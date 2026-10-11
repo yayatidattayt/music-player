@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch
+from urllib.error import URLError
 
 from fastapi import HTTPException
 from sqlalchemy import create_engine
@@ -125,15 +126,43 @@ class DirectorTests(unittest.TestCase):
 
         before_playlists = self.db.query(Playlist).count()
         before_tracks = self.db.query(Track).count()
-        with patch("app.api.playlists.yt_dlp.YoutubeDL", FakeYoutubeDL):
+        with patch("app.api.playlists.urlopen", side_effect=URLError("offline")), \
+             patch("app.api.playlists.analyze_song", return_value={
+                 "bpm": 120, "key": "C major", "language": "english", "source": "test metadata",
+             }), \
+             patch("app.api.playlists.yt_dlp.YoutubeDL", FakeYoutubeDL):
+            result = discover_director_tracks(DirectorDiscoverRequest(
+                seed_track_id=self.seed.id,
+                count=1,
+                language="en",
+            ), self.db)
+        self.assertIsNone(result["playlist_id"])
+        self.assertEqual(result["found"], 1)
+        self.assertEqual(result["tracks"][0]["bpm"], 120)
+        self.assertEqual(result["tracks"][0]["key"], "C major")
+        self.assertEqual(result["tracks"][0]["language"], "english")
+        self.assertEqual(self.db.query(Playlist).count(), before_playlists)
+        self.assertEqual(self.db.query(Track).count(), before_tracks)
+
+    def test_discovery_rejects_unverified_bpm_and_key_before_preview(self):
+        class FakeYoutubeDL:
+            def __init__(self, _options): pass
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def extract_info(self, _query, download=False):
+                return {"entries": [{
+                    "id": "unverified", "webpage_url": "https://www.youtube.com/watch?v=unverified",
+                    "title": "Unverified song", "uploader": "Another artist", "duration": 190,
+                }]}
+
+        with patch("app.api.playlists.urlopen", side_effect=URLError("offline")), \
+             patch("app.api.playlists.analyze_song", return_value={"bpm": None, "key": None}), \
+             patch("app.api.playlists.yt_dlp.YoutubeDL", FakeYoutubeDL):
             result = discover_director_tracks(DirectorDiscoverRequest(
                 seed_track_id=self.seed.id,
                 count=1,
             ), self.db)
-        self.assertIsNone(result["playlist_id"])
-        self.assertEqual(result["found"], 1)
-        self.assertEqual(self.db.query(Playlist).count(), before_playlists)
-        self.assertEqual(self.db.query(Track).count(), before_tracks)
+        self.assertEqual(result["found"], 0)
 
 
 if __name__ == "__main__":
