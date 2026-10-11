@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
 echo Starting ydkmusic...
@@ -31,25 +31,26 @@ set "HEALTH_FILE=%TEMP%\ydkmusic-health.json"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8000/health' -TimeoutSec 2 | Select-Object -ExpandProperty Content | Set-Content -Encoding UTF8 '%HEALTH_FILE%'; exit 0 } catch { exit 1 }" >nul 2>&1
 if not errorlevel 1 goto :server_ready
 
-netstat -ano | findstr /R /C:":8000 .*LISTENING" >nul 2>&1
-if not errorlevel 1 (
-    set "APP_PORT=8001"
-    echo Port 8000 is already occupied. Using port 8001 instead.
+set "APP_PORT="
+for /L %%P in (8000,1,8010) do (
+    netstat -ano | findstr /R /C:":%%P .*LISTENING" >nul 2>&1
+    if errorlevel 1 if not defined APP_PORT set "APP_PORT=%%P"
 )
-
-netstat -ano | findstr /R /C:":8001 .*LISTENING" >nul 2>&1
-if not errorlevel 1 (
-    set "APP_PORT=8002"
-    echo Port 8001 is already occupied. Using port 8002 instead.
+if not defined APP_PORT (
+    echo No free port was found between 8000 and 8010.
+    echo Close another local development server and try again.
+    pause
+    exit /b 1
 )
+if not "!APP_PORT!"=="8000" echo Port 8000 is occupied. Using port !APP_PORT! instead.
 
 echo Opening the website. Keep the server window open while using it.
-start "ydkmusic server" /D "%CD%" cmd /k ""%CD%\.venv\Scripts\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port %APP_PORT%"
+start "ydkmusic server" /D "%CD%" cmd /k ""%CD%\.venv\Scripts\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port !APP_PORT!"
 
 set /a WAIT_COUNT=0
 :wait_for_server
 timeout /t 1 /nobreak >nul
-powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:%APP_PORT%/health' -TimeoutSec 2 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:!APP_PORT!/health' -TimeoutSec 2 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>&1
 if not errorlevel 1 goto :server_ready
 set /a WAIT_COUNT+=1
 if %WAIT_COUNT% GEQ 20 (
@@ -61,9 +62,9 @@ if %WAIT_COUNT% GEQ 20 (
 goto :wait_for_server
 
 :server_ready
-start "" "http://127.0.0.1:%APP_PORT%/"
+start "" "http://127.0.0.1:!APP_PORT!/"
 
-echo ydkmusic is running at http://127.0.0.1:%APP_PORT%
+echo ydkmusic is running at http://127.0.0.1:!APP_PORT!
 echo.
 echo The ydkmusic server window will stay open while the app is running.
 echo Close the window titled "ydkmusic server" or press Ctrl+C there to stop the server.
