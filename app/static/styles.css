@@ -3352,6 +3352,25 @@ body.sidebar-collapsed .sidebar-reopen { display: block; }
   }
 }
 
+/* Now Playing is a fixed presentation surface; only its inner Lyrics list
+   may scroll when the drawer is open. */
+body:has(.now-playing.is-open) {
+  overflow: hidden !important;
+}
+.now-playing.is-open {
+  overflow: hidden !important;
+  min-height: 100dvh !important;
+  height: 100dvh !important;
+}
+.now-playing.is-open .lyrics-panel {
+  overflow: hidden !important;
+}
+.now-playing.is-open .lyrics-list,
+.now-playing.is-open #lyrics-view {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 @media (min-width: 701px) and (max-width: 1000px) {
   .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-content {
     width: calc(100% - 390px);
