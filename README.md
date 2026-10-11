@@ -50,6 +50,18 @@ R2_REGION=auto
 
 When all five values are present, new audio is uploaded to R2 and the temporary local copy is removed. Playback uses short-lived signed URLs. If R2 is not configured, the app keeps using its local-storage fallback so an offline/local setup still works. Existing local tracks are not migrated automatically.
 
+### Online deployment with Render
+
+The repository includes `render.yaml` for a basic Render deployment. It creates a web service and a PostgreSQL database. To deploy:
+
+1. Push this repository to GitHub.
+2. In Render, choose **New → Blueprint** and select the repository.
+3. Review the `ydkmusic` web service and `ydkmusic-db` PostgreSQL database.
+4. Add the R2 secrets under the web service environment variables: `R2_ENDPOINT_URL`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_BUCKET`.
+5. Deploy and open the generated `onrender.com` URL.
+
+The service uses `DATABASE_URL` from the managed PostgreSQL database. Do not upload the local SQLite database, `.env` file, passwords, or API keys to GitHub. R2 should be configured before importing audio because hosted web-service filesystems are not a permanent place for user media.
+
 ### First administrator setup
 
 The existing pre-account library is kept unassigned until you choose its administrator. Stop the server once, then run this from the project folder:
