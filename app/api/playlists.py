@@ -257,6 +257,27 @@ def analyze_audio_features(file_path: Path) -> dict:
         return {}
 
 
+def analyze_audio_preview_features(file_path: Path) -> dict:
+    """Fast tempo/key estimate for short catalog previews; does not persist audio."""
+    try:
+        import librosa
+
+        audio, sample_rate = librosa.load(file_path, sr=22050, mono=True, duration=24)
+        if len(audio) < sample_rate * 4:
+            return {}
+        tempo, _ = librosa.beat.beat_track(y=audio, sr=sample_rate, units="time")
+        chroma = librosa.feature.chroma_stft(y=audio, sr=sample_rate, n_fft=4096, hop_length=1024)
+        profile = chroma.mean(axis=1)
+        note_names = ("C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B")
+        key_index = int(profile.argmax())
+        return {
+            "bpm": round(float(tempo[0] if hasattr(tempo, "__len__") else tempo)),
+            "key": f"{note_names[key_index]} (estimated)",
+        }
+    except Exception:
+        return {}
+
+
 def analyze_catalog_preview(preview_url: str | None) -> dict:
     """Temporarily analyze a short Apple Music preview when BPM/key APIs lack data."""
     if not preview_url:
@@ -275,7 +296,7 @@ def analyze_catalog_preview(preview_url: str | None) -> dict:
         with NamedTemporaryFile(delete=False, suffix=".m4a") as temporary_file:
             temporary_path = Path(temporary_file.name)
             temporary_file.write(audio_bytes)
-        features = analyze_audio_features(temporary_path)
+        features = analyze_audio_preview_features(temporary_path)
         if not features.get("bpm") or not features.get("key"):
             return {}
         return {
@@ -1915,7 +1936,7 @@ def discover_director_tracks(payload: DirectorDiscoverRequest, db: DbSession) ->
         catalog_entries = []
 
     preview_analysis_count = 0
-    preview_analysis_limit = min(12, max(4, payload.count))
+    preview_analysis_limit = min(8, max(4, payload.count))
     for entry in catalog_entries[:max(20, min(60, payload.count * 4))]:
         if len(discovered) >= payload.count:
             break
