@@ -81,7 +81,6 @@ let audioAnalyserActive = false;
 let bassEnergy = 0;
 let bassPunch = 0;
 let coverVisualizerEnabled = localStorage.getItem("sideb-cover-visualizer") !== "false";
-let coverVisualizerBeforeLyrics = null;
 let coverVisualizerLevels = [];
 let peakLevels = [];
 let artThemeRequest = 0;
@@ -990,6 +989,9 @@ function drawCoverVisualizer() {
   const bottom = top + stageBounds.height;
   const playing = audioAnalyserActive;
   const bass = Math.min(1, bassEnergy * 1.55 + bassPunch * 1.15);
+  // Keep the artwork rotation and radial bars driven by the same smoothed
+  // bass envelope. Bass hits briefly accelerate the motion, then ease back.
+  art.style.setProperty("--cover-rotation-duration", `${Math.max(11, 36 - bass * 23)}s`);
   const artA = getComputedStyle(document.documentElement).getPropertyValue("--art-a").trim() || "#c5d77b";
   const artB = getComputedStyle(document.documentElement).getPropertyValue("--art-b").trim() || "#7e8cc7";
   const accent = getComputedStyle(document.documentElement).getPropertyValue("--art-accent").trim() || "#c5d77b";
@@ -1934,21 +1936,12 @@ function closeNowPlaying() {
   visualizer.hidden = true;
   byId("lyrics-panel").hidden = true;
   byId("lyrics-toggle").setAttribute("aria-expanded", "false");
-  if (coverVisualizerBeforeLyrics !== null) {
-    coverVisualizerEnabled = coverVisualizerBeforeLyrics;
-    coverVisualizerBeforeLyrics = null;
-  }
 }
 
 function closeLyricsPanel() {
   const panel = byId("lyrics-panel");
   panel.hidden = true;
   byId("lyrics-toggle").setAttribute("aria-expanded", "false");
-  if (coverVisualizerBeforeLyrics !== null) {
-    coverVisualizerEnabled = coverVisualizerBeforeLyrics;
-    coverVisualizerBeforeLyrics = null;
-    updateNowPlayingControls();
-  }
 }
 
 function updateNowPlayingControls() {
@@ -3644,16 +3637,7 @@ byId("lyrics-toggle").addEventListener("click", () => {
   const isOpen = !panel.hidden;
   panel.hidden = isOpen;
   byId("lyrics-toggle").setAttribute("aria-expanded", String(!isOpen));
-  if (!isOpen) {
-    coverVisualizerBeforeLyrics = coverVisualizerEnabled;
-    coverVisualizerEnabled = false;
-    updateNowPlayingControls();
-    syncLyrics();
-  } else if (coverVisualizerBeforeLyrics !== null) {
-    coverVisualizerEnabled = coverVisualizerBeforeLyrics;
-    coverVisualizerBeforeLyrics = null;
-    updateNowPlayingControls();
-  }
+  if (!isOpen) syncLyrics();
 });
 
 byId("lyrics-close").addEventListener("click", closeLyricsPanel);

@@ -5307,7 +5307,7 @@ body.is-audio-playing .player-mini-wave i { animation-play-state: running; }
   background-image: radial-gradient(circle at 35% 30%, rgba(255,255,255,.22), rgba(255,255,255,.06) 34%, rgba(8,12,11,.94) 72%);
   box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 22px 70px rgba(0,0,0,.52), inset 0 0 34px rgba(255,255,255,.08);
   color: rgba(255,255,255,.82);
-  animation: circular-cover-rotation 36s linear infinite;
+  animation: circular-cover-rotation var(--cover-rotation-duration, 36s) linear infinite;
 }
 .now-playing-art-stage.is-circular-visualizer .now-playing-art::after {
   content: "";
@@ -5364,5 +5364,47 @@ body.is-audio-playing .player-mini-wave i { animation-play-state: running; }
     width: 100% !important;
     height: 100% !important;
     aspect-ratio: 1 / 1 !important;
+  }
+}
+
+/* Final Lyrics composition: the drawer gets a real column, while the player
+   keeps enough room for its artwork, controls, and active visualizer. */
+@media (min-width: 1001px) {
+  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-content {
+    width: calc(100% - min(410px, 34vw) - 5vw) !important;
+    margin-left: 3vw !important;
+    margin-right: calc(min(410px, 34vw) + 2vw) !important;
+    grid-template-columns: minmax(280px, 390px) minmax(300px, 1fr) !important;
+    column-gap: clamp(28px, 4vw, 58px) !important;
+  }
+  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-art-stage {
+    width: min(390px, 100%) !important;
+    height: auto !important;
+    aspect-ratio: 1 / 1 !important;
+  }
+  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-cover-visualizer {
+    inset: -42px !important;
+    width: calc(100% + 84px) !important;
+    height: calc(100% + 84px) !important;
+  }
+}
+
+@media (min-width: 701px) and (max-width: 1000px) {
+  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-content {
+    width: calc(100% - 330px) !important;
+    margin-left: 24px !important;
+    margin-right: 306px !important;
+    grid-template-columns: minmax(200px, 240px) minmax(0, 1fr) !important;
+    column-gap: 18px !important;
+  }
+  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-art-stage {
+    width: min(240px, 100%) !important;
+    height: auto !important;
+    aspect-ratio: 1 / 1 !important;
+  }
+  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-cover-visualizer {
+    inset: -30px !important;
+    width: calc(100% + 60px) !important;
+    height: calc(100% + 60px) !important;
   }
 }
