@@ -56,6 +56,7 @@ const connectionLabel = byId("connection-label");
 const statusLight = document.querySelector(".status-light");
 const audioEngine = byId("audio-engine");
 const visualizer = byId("now-playing-visualizer");
+const coverVisualizer = byId("now-playing-cover-visualizer");
 const topbarVisualizer = byId("topbar-visualizer");
 const miniWaveBars = [...document.querySelectorAll(".player-mini-wave i")];
 let savedSidebarState = localStorage.getItem("ydkmusic-sidebar-collapsed") === "true";
@@ -76,7 +77,11 @@ let analyser = null;
 let audioSource = null;
 let equalizerFilters = [];
 let frequencyData = null;
+let audioAnalyserActive = false;
 let bassEnergy = 0;
+let bassPunch = 0;
+let coverVisualizerEnabled = localStorage.getItem("sideb-cover-visualizer") !== "false";
+let coverVisualizerLevels = [];
 let peakLevels = [];
 let artThemeRequest = 0;
 let artThemeUrl = null;
@@ -820,6 +825,27 @@ function setupAudioAnalyzer() {
   restoreEqualizer();
 }
 
+function sampleAnalyserFrame() {
+  audioAnalyserActive = Boolean(analyser && frequencyData && !audioEngine.paused && audioEngine.readyState >= 2);
+  if (audioAnalyserActive) {
+    analyser.getByteFrequencyData(frequencyData);
+  } else if (frequencyData) {
+    frequencyData.fill(0);
+  }
+
+  const bassBins = Math.max(1, Math.floor((frequencyData?.length || 1) * .16));
+  const bassAverage = frequencyData
+    ? frequencyData.slice(0, bassBins).reduce((sum, value) => sum + value, 0) / bassBins / 255
+    : 0;
+  const punchBins = Math.max(1, Math.floor((frequencyData?.length || 1) * .08));
+  const punchPeak = frequencyData
+    ? Math.max(...frequencyData.slice(0, punchBins), 0) / 255
+    : 0;
+  bassEnergy = bassEnergy * .78 + bassAverage * .22;
+  bassPunch = bassPunch * .62 + punchPeak * .38;
+  document.documentElement.style.setProperty("--bass-hit", String(Math.min(1, bassEnergy * 1.5 + bassPunch * .85)));
+}
+
 function drawAuthVisualizer() {
   const canvas = byId("auth-visualizer");
   if (!canvas) return;
@@ -835,8 +861,7 @@ function drawAuthVisualizer() {
   const context = canvas.getContext("2d");
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
   context.clearRect(0, 0, bounds.width, bounds.height);
-  const playing = playerTrack?.id === HOME_FEATURE_TRACK.id && !audioEngine.paused;
-  if (analyser && frequencyData && playing) analyser.getByteFrequencyData(frequencyData);
+  const playing = audioAnalyserActive;
   const centerX = bounds.width / 2;
   const centerY = bounds.height / 2;
   const core = Math.min(bounds.width, bounds.height) * .365;
@@ -872,8 +897,10 @@ function drawAuthVisualizer() {
 }
 
 function drawVisualizer() {
+  sampleAnalyserFrame();
   drawAuthVisualizer();
   drawTopbarVisualizer();
+  drawCoverVisualizer();
   updateMiniWave();
   if (!visualizer) {
     requestAnimationFrame(drawVisualizer);
@@ -895,20 +922,13 @@ function drawVisualizer() {
   const gap = 4;
   const width = Math.max(2, (bounds.width - gap * (bars - 1)) / bars);
   context.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--art-accent").trim() || "#c5d77b";
-  if (analyser && frequencyData && !audioEngine.paused) analyser.getByteFrequencyData(frequencyData);
-  const bassBins = Math.max(1, Math.floor((frequencyData?.length || 1) * 0.16));
-  const bassAverage = frequencyData
-    ? frequencyData.slice(0, bassBins).reduce((sum, value) => sum + value, 0) / bassBins / 255
-    : 0;
-  bassEnergy = bassEnergy * 0.84 + bassAverage * 0.16;
-  document.documentElement.style.setProperty("--bass-hit", String(Math.min(1, bassEnergy * 1.8)));
   const accent = getComputedStyle(document.documentElement).getPropertyValue("--art-accent").trim() || "#c5d77b";
   const gradient = context.createLinearGradient(0, bounds.height, 0, 0);
   gradient.addColorStop(0, accent);
   gradient.addColorStop(.55, "rgba(255, 255, 255, .9)");
   gradient.addColorStop(1, accent);
   context.fillStyle = gradient;
-  context.globalAlpha = audioEngine.paused ? 0.16 : 0.86;
+  context.globalAlpha = audioAnalyserActive ? 0.86 : 0.16;
   if (peakLevels.length !== bars) peakLevels = new Array(bars).fill(0);
 
   const centerY = bounds.height - 12;
@@ -921,11 +941,11 @@ function drawVisualizer() {
     context.roundRect(index * (width + gap), centerY - height, width, height, width / 2);
     context.fill();
 
-    context.globalAlpha = audioEngine.paused ? 0.04 : 0.2;
+    context.globalAlpha = audioAnalyserActive ? 0.04 + bassPunch * .16 : 0.04;
     context.beginPath();
     context.roundRect(index * (width + gap), centerY + 3, width, height * .28, width / 2);
     context.fill();
-    context.globalAlpha = audioEngine.paused ? 0.16 : 0.86;
+    context.globalAlpha = audioAnalyserActive ? 0.86 : 0.16;
 
     context.fillStyle = "rgba(255, 255, 255, .82)";
     context.fillRect(index * (width + gap), centerY - peakLevels[index] - 2, width, 2);
@@ -940,10 +960,244 @@ function drawVisualizer() {
   requestAnimationFrame(drawVisualizer);
 }
 
+function drawCoverVisualizer() {
+  if (!coverVisualizer) return;
+  const stage = byId("now-playing-art-stage");
+  const art = byId("now-playing-art");
+  if (!stage || !art) return;
+  const stageBounds = stage.getBoundingClientRect();
+  const canvasBounds = coverVisualizer.getBoundingClientRect();
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  if (!stageBounds.width || !stageBounds.height || !canvasBounds.width || !canvasBounds.height || !coverVisualizerEnabled || byId("now-playing")?.hidden) {
+    coverVisualizer.style.opacity = "0";
+    art.style.setProperty("--cover-pulse", "0");
+    return;
+  }
+  coverVisualizer.style.opacity = "1";
+  const pixelWidth = Math.round(canvasBounds.width * ratio);
+  const pixelHeight = Math.round(canvasBounds.height * ratio);
+  if (coverVisualizer.width !== pixelWidth || coverVisualizer.height !== pixelHeight) {
+    coverVisualizer.width = pixelWidth;
+    coverVisualizer.height = pixelHeight;
+  }
+  const context = coverVisualizer.getContext("2d");
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, canvasBounds.width, canvasBounds.height);
+  const left = stageBounds.left - canvasBounds.left;
+  const top = stageBounds.top - canvasBounds.top;
+  const right = left + stageBounds.width;
+  const bottom = top + stageBounds.height;
+  const playing = audioAnalyserActive;
+  const bass = Math.min(1, bassEnergy * 1.55 + bassPunch * 1.15);
+  const artA = getComputedStyle(document.documentElement).getPropertyValue("--art-a").trim() || "#c5d77b";
+  const artB = getComputedStyle(document.documentElement).getPropertyValue("--art-b").trim() || "#7e8cc7";
+  const accent = getComputedStyle(document.documentElement).getPropertyValue("--art-accent").trim() || "#c5d77b";
+
+  // Trap Nation-style mode: the cover becomes a clean circular mask and the
+  // FFT waveform radiates continuously around it.
+  const centerX = (left + right) / 2;
+  const centerY = (top + bottom) / 2;
+  const circleRadius = Math.min(stageBounds.width, stageBounds.height) * .32;
+  const availableAmplitude = Math.max(16, Math.min(
+    centerX - circleRadius,
+    centerY - circleRadius,
+    canvasBounds.width - centerX - circleRadius,
+    canvasBounds.height - centerY - circleRadius,
+  ));
+  const maxAmplitude = Math.min(42, Math.max(18, availableAmplitude * .45));
+  const rotation = performance.now() * .000035;
+  const artRadius = Math.min(stageBounds.width, stageBounds.height) * .285;
+  const haloRadius = circleRadius + maxAmplitude * .72;
+  const halo = context.createRadialGradient(centerX, centerY, artRadius * .82, centerX, centerY, haloRadius);
+  halo.addColorStop(0, "rgba(0, 0, 0, 0)");
+  halo.addColorStop(.22, artA);
+  halo.addColorStop(.52, accent);
+  halo.addColorStop(.82, artB);
+  halo.addColorStop(1, "rgba(0, 0, 0, 0)");
+  context.globalCompositeOperation = "lighter";
+  context.globalAlpha = playing ? .16 + bass * .42 : .06;
+  context.fillStyle = halo;
+  context.beginPath();
+  context.arc(centerX, centerY, haloRadius, 0, Math.PI * 2);
+  context.fill();
+  context.globalAlpha = 1;
+  // Radial bars are the active reference style. The halo and these bars use
+  // the same bass/FFT frame, so their brightness and expansion stay locked.
+  const barCount = 82;
+  const barInnerRadius = circleRadius + 5;
+  const binCount = frequencyData?.length || 1;
+  if (coverVisualizerLevels.length !== barCount) coverVisualizerLevels = new Array(barCount).fill(.02);
+  const barGradient = context.createLinearGradient(left, top, right, bottom);
+  barGradient.addColorStop(0, artA);
+  barGradient.addColorStop(.5, accent);
+  barGradient.addColorStop(1, artB);
+  const glowPath = new Path2D();
+  const corePath = new Path2D();
+  context.lineCap = "round";
+  for (let index = 0; index < barCount; index += 1) {
+    const bin = Math.min(binCount - 1, Math.floor(Math.pow(index / barCount, .68) * binCount));
+    const neighbour = Math.min(binCount - 1, bin + Math.max(1, Math.floor(binCount / 90)));
+    const raw = playing
+      ? (((frequencyData?.[bin] || 0) * .7) + ((frequencyData?.[neighbour] || 0) * .3)) / 255
+      : .018;
+    const target = Math.min(1, Math.pow(raw, .32) * (playing ? 1.78 : .12));
+    const current = coverVisualizerLevels[index];
+    const smoothing = target > current ? .64 : .16;
+    const level = current + (target - current) * smoothing;
+    coverVisualizerLevels[index] = level;
+    const angle = (index / barCount) * Math.PI * 2 - Math.PI / 2 + rotation;
+    const outerRadius = barInnerRadius + 4 + level * maxAmplitude + level * bass * maxAmplitude * .48;
+    const x1 = centerX + Math.cos(angle) * barInnerRadius;
+    const y1 = centerY + Math.sin(angle) * barInnerRadius;
+    const x2 = centerX + Math.cos(angle) * outerRadius;
+    const y2 = centerY + Math.sin(angle) * outerRadius;
+    glowPath.moveTo(x1, y1);
+    glowPath.lineTo(x2, y2);
+    corePath.moveTo(x1, y1);
+    corePath.lineTo(x2, y2);
+  }
+  context.strokeStyle = barGradient;
+  context.shadowColor = accent;
+  context.globalAlpha = playing ? .2 + bass * .2 : .04;
+  context.lineWidth = 4.5 + bass * 2;
+  context.shadowBlur = playing ? 7 + bass * 12 : 3;
+  context.stroke(glowPath);
+  context.globalAlpha = playing ? .86 + bass * .14 : .18;
+  context.lineWidth = 2.1 + bass * 1.3;
+  context.shadowBlur = playing ? 2 + bass * 5 : 1;
+  context.stroke(corePath);
+  context.shadowBlur = 0;
+  context.globalCompositeOperation = "source-over";
+  context.globalAlpha = 1;
+  art.style.setProperty("--cover-pulse", String(Math.min(1, bass * 1.12)));
+  return;
+
+  const waveformGradient = context.createLinearGradient(left, top, right, bottom);
+  waveformGradient.addColorStop(0, artA);
+  waveformGradient.addColorStop(.5, accent);
+  waveformGradient.addColorStop(1, artB);
+  context.beginPath();
+  context.moveTo(points[0][0], points[0][1]);
+  for (let index = 1; index < points.length; index += 1) context.lineTo(points[index][0], points[index][1]);
+  context.closePath();
+  context.lineJoin = "round";
+  context.lineCap = "round";
+  context.strokeStyle = waveformGradient;
+  context.globalAlpha = playing ? .26 + bass * .12 : .05;
+  context.lineWidth = 4 + bass * 5;
+  context.shadowColor = accent;
+  context.shadowBlur = playing ? 12 + bass * 16 : 5;
+  context.stroke();
+  context.globalAlpha = playing ? .9 : .18;
+  context.lineWidth = 1.5 + bass * 1.8;
+  context.shadowBlur = playing ? 4 + bass * 7 : 2;
+  context.stroke();
+  context.shadowBlur = 0;
+  context.globalAlpha = 1;
+  art.style.setProperty("--cover-pulse", String(Math.min(1, bass * 1.12)));
+  return;
+
+  {
+  const palette = [artA, accent, artB, accent];
+  const samples = Math.max(96, Math.floor(Math.max(stageBounds.width, stageBounds.height) / 3));
+  const totalSamples = samples * 4;
+  if (coverVisualizerLevels.length !== totalSamples) coverVisualizerLevels = new Array(totalSamples).fill(.02);
+  const availableAmplitude = Math.max(12, Math.min(left, top, canvasBounds.width - right, canvasBounds.height - bottom));
+  const maxAmplitude = availableAmplitude * .66;
+  const amplitudeAt = (sampleIndex, side) => {
+    const binCount = frequencyData?.length || 1;
+    const position = sampleIndex / Math.max(1, samples - 1);
+    const binPosition = side % 2 === 0 ? position : 1 - position;
+    const bin = Math.min(binCount - 1, Math.floor(Math.pow(binPosition, .72) * binCount));
+    const neighbour = Math.min(binCount - 1, bin + Math.max(1, Math.floor(binCount / 80)));
+    const raw = playing
+      ? (((frequencyData?.[bin] || 0) * .72) + ((frequencyData?.[neighbour] || 0) * .28)) / 255
+      : .018;
+    const target = Math.min(1, Math.pow(raw, .42) * (playing ? 1.5 : .12));
+    const index = side * samples + sampleIndex;
+    const current = coverVisualizerLevels[index];
+    const smoothing = target > current ? .46 : .14;
+    coverVisualizerLevels[index] = current + (target - current) * smoothing;
+    const level = coverVisualizerLevels[index];
+    return 2 + level * maxAmplitude + level * bass * maxAmplitude * .42;
+  };
+  const outerPoints = [[], [], [], []];
+  const drawEdgeWave = (side) => {
+    for (let index = 0; index <= samples; index += 1) {
+      const t = index / samples;
+      const amplitude = amplitudeAt(Math.min(samples - 1, index), side);
+      const point = side === 0
+        ? [left + t * stageBounds.width, top - amplitude]
+        : side === 1
+          ? [right + amplitude, top + t * stageBounds.height]
+          : side === 2
+            ? [right - t * stageBounds.width, bottom + amplitude]
+            : [left - amplitude, bottom - t * stageBounds.height];
+      outerPoints[side].push(point);
+    }
+  };
+  for (let side = 0; side < 4; side += 1) drawEdgeWave(side);
+  const connectedPath = [
+    ...outerPoints[0],
+    ...outerPoints[1],
+    ...outerPoints[2],
+    ...outerPoints[3],
+  ];
+  if (connectedPath.length) {
+    const waveformGradient = context.createLinearGradient(left, top, right, bottom);
+    waveformGradient.addColorStop(0, artA);
+    waveformGradient.addColorStop(.5, accent);
+    waveformGradient.addColorStop(1, artB);
+
+    context.beginPath();
+    context.moveTo(connectedPath[0][0], connectedPath[0][1]);
+    const edgeStride = samples + 1;
+    for (let index = 1; index < connectedPath.length; index += 1) {
+      const current = connectedPath[index];
+      const next = connectedPath[index + 1];
+      const corner = index === edgeStride || index === edgeStride * 2 || index === edgeStride * 3;
+      if (corner) {
+        const cornerRadius = Math.max(8, Math.min(availableAmplitude * .12, Math.min(stageBounds.width, stageBounds.height) * .08));
+        const control = index === edgeStride
+          ? [right + cornerRadius, top - cornerRadius]
+          : index === edgeStride * 2
+            ? [right + cornerRadius, bottom + cornerRadius]
+            : [left - cornerRadius, bottom + cornerRadius];
+        context.quadraticCurveTo(control[0], control[1], current[0], current[1]);
+      } else {
+        context.lineTo(current[0], current[1]);
+      }
+    }
+    const first = connectedPath[0];
+    const cornerRadius = Math.max(8, Math.min(availableAmplitude * .12, Math.min(stageBounds.width, stageBounds.height) * .08));
+    context.quadraticCurveTo(left - cornerRadius, top - cornerRadius, first[0], first[1]);
+    const outlineGradient = context.createLinearGradient(left, top, right, bottom);
+    outlineGradient.addColorStop(0, artA);
+    outlineGradient.addColorStop(.5, accent);
+    outlineGradient.addColorStop(1, artB);
+    context.lineJoin = "round";
+    context.lineCap = "round";
+    context.strokeStyle = outlineGradient;
+    context.globalAlpha = playing ? .26 + bass * .16 : .06;
+    context.lineWidth = 8 + bass * 11;
+    context.shadowColor = accent;
+    context.shadowBlur = playing ? 22 + bass * 28 : 7;
+    context.stroke();
+    context.globalAlpha = playing ? .92 + bass * .08 : .18;
+    context.lineWidth = 2.2 + bass * 3.2;
+    context.strokeStyle = outlineGradient;
+    context.shadowBlur = playing ? 7 + bass * 12 : 2;
+    context.stroke();
+  }
+  context.shadowBlur = 0;
+  context.globalAlpha = 1;
+  art.style.setProperty("--cover-pulse", String(Math.min(1, bass * 1.12)));
+  }
+}
+
 function updateMiniWave() {
   if (!miniWaveBars.length) return;
-  const playing = playerTrack && !audioEngine.paused && analyser && frequencyData;
-  if (playing) analyser.getByteFrequencyData(frequencyData);
+  const playing = audioAnalyserActive;
   miniWaveBars.forEach((bar, index) => {
     const edge = Math.sin(((index + 1) / (miniWaveBars.length + 1)) * Math.PI);
     const bin = Math.min(frequencyData?.length - 1 || 0, Math.floor((index / miniWaveBars.length) * (frequencyData?.length || 1) * .9));
@@ -965,17 +1219,10 @@ function drawTopbarVisualizer() {
   context.clearRect(0, 0, bounds.width, bounds.height);
   if (!bounds.width) return;
 
-  if (analyser && frequencyData && !audioEngine.paused) analyser.getByteFrequencyData(frequencyData);
-  const bassBins = Math.max(1, Math.floor((frequencyData?.length || 1) * .16));
-  const bassAverage = frequencyData
-    ? frequencyData.slice(0, bassBins).reduce((sum, value) => sum + value, 0) / bassBins / 255
-    : 0;
-  bassEnergy = bassEnergy * .84 + bassAverage * .16;
-  document.documentElement.style.setProperty("--bass-hit", String(Math.min(1, bassEnergy * 1.8)));
   const artA = getComputedStyle(document.documentElement).getPropertyValue("--art-a").trim() || "#c5d77b";
   const artB = getComputedStyle(document.documentElement).getPropertyValue("--art-b").trim() || "#7e8cc7";
   const accent = getComputedStyle(document.documentElement).getPropertyValue("--art-accent").trim() || "#c5d77b";
-  const energy = audioEngine.paused ? .45 : .8 + bassEnergy * .6;
+  const energy = audioAnalyserActive ? .8 + bassEnergy * .6 + bassPunch * .25 : .45;
   const time = performance.now() * .001;
   const drawWave = (color, phase, amplitude, thickness, alpha) => {
     context.beginPath();
@@ -1729,6 +1976,15 @@ function updateNowPlayingControls() {
   muteButton.setAttribute("aria-label", audioEngine.muted || audioEngine.volume === 0 ? "Unmute" : "Mute");
   volumeInput.value = audioEngine.volume;
   volumeValue.textContent = `${Math.round(visibleVolume * 100)}%`;
+  const coverToggle = byId("now-playing-cover-toggle");
+  const artStage = byId("now-playing-art-stage");
+  if (artStage) artStage.classList.toggle("is-circular-visualizer", coverVisualizerEnabled);
+  if (coverToggle) {
+    coverToggle.setAttribute("aria-pressed", String(coverVisualizerEnabled));
+    coverToggle.setAttribute("aria-label", coverVisualizerEnabled ? "Show cover art" : "Show circular visualizer");
+    coverToggle.title = coverVisualizerEnabled ? "Show cover art" : "Show circular visualizer";
+    coverToggle.classList.toggle("is-active", coverVisualizerEnabled);
+  }
 }
 
 
@@ -3501,6 +3757,13 @@ byId("now-playing-toggle").addEventListener("click", async () => {
   else audioEngine.pause();
 
   updateNowPlayingControls();
+});
+
+byId("now-playing-cover-toggle").addEventListener("click", () => {
+  coverVisualizerEnabled = !coverVisualizerEnabled;
+  localStorage.setItem("sideb-cover-visualizer", String(coverVisualizerEnabled));
+  updateNowPlayingControls();
+  showToast(coverVisualizerEnabled ? "Cover visualizer on." : "Cover visualizer off.");
 });
 
 byId("now-playing-progress").addEventListener("input", (event) => {
