@@ -2746,7 +2746,15 @@ async function updateDirectorSeedDetails() {
   const genre = track.genre || "uncategorized";
   details.textContent = `${bpm} · ${key} · ${genre}`;
   const mood = byId("director-mood");
-  if (!mood.value.trim()) mood.value = genre === "uncategorized" ? "similar mood" : `${genre} mood`;
+  if (!mood.value.trim()) {
+    const energy = Number(features.energy);
+    const energyLabel = Number.isFinite(energy) && energy >= 0.72
+      ? "energetic"
+      : Number.isFinite(energy) && energy <= 0.35
+        ? "calm"
+        : "similar";
+    mood.value = genre === "uncategorized" ? `${energyLabel} mood` : `${genre} ${energyLabel} mood`;
+  }
   if (features.language && !byId("director-language").value.trim()) {
     byId("director-language").value = features.language;
   }
@@ -2776,9 +2784,13 @@ async function generateDirectorMix() {
     const songLabel = tracks.length === 1 ? "song" : "songs";
     const durationMinutes = Math.round((mix.actual_duration_seconds || 0) / 60);
     const durationLabel = durationMinutes === 0 ? "under 1 minute" : `about ${durationMinutes} minutes`;
+    const shortfallMessage = tracks.length < requestedTrackCount
+      ? `<p class="director-warnings">Only ${tracks.length} ${songLabel} matched the current BPM, key, language, and library filters. Try adding more songs or use online discoveries.</p>`
+      : "";
     const qualityWarnings = mix.quality?.warnings || [];
     resultBox.innerHTML = `
       <p><strong>${tracks.length} ${songLabel} · ${durationLabel}</strong></p>
+      ${shortfallMessage}
       ${qualityWarnings.length ? `<div class="director-warnings">${qualityWarnings.map((warning) => `<p>⚠ ${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
       <ol>${tracks.map((item) => `<li><strong>${escapeHtml(item.track.title)}</strong> — ${escapeHtml(item.track.artist)}${item.transition ? `<small> · ${escapeHtml(item.transition.transition || "Transition")}</small>` : ""}</li>`).join("")}</ol>
       <div class="dialog-actions">

@@ -1424,21 +1424,17 @@ def generate_director_mix(payload: DirectorGenerateRequest, db: DbSession) -> di
 
     ensure_track_features(seed, db)
 
-    candidate_scope = (
-        (Playlist.owner_id == owner_id, Playlist.id == payload.seed_playlist_id)
-        if payload.seed_playlist_id
-        else (Playlist.owner_id == owner_id,)
-    )
     candidates = list(
         db.scalars(
             select(Track)
             .join(Playlist, Playlist.id == Track.playlist_id)
             .options(selectinload(Track.features))
-            .where(*candidate_scope, Track.id != seed.id)
+            .where(Playlist.owner_id == owner_id, Track.id != seed.id)
         ).all()
     )
     seed_genre = (seed.genre or "").casefold()
     candidates.sort(key=lambda track: (
+        0 if payload.seed_playlist_id and track.playlist_id == payload.seed_playlist_id else 1,
         0 if seed_genre and (track.genre or "").casefold() == seed_genre else 1,
         int(track.play_count or 0),
         track.id,
@@ -1485,7 +1481,9 @@ def generate_director_mix(payload: DirectorGenerateRequest, db: DbSession) -> di
             if reference_bpm and bpm_difference(reference_bpm, candidate_features.bpm) > payload.bpm_tolerance:
                 continue
             if current_features and current_features.language:
-                if candidate_features and candidate_features.language and normalize_language(candidate_features.language) != normalize_language(current_features.language):
+                if not candidate_features or not candidate_features.language:
+                    continue
+                if normalize_language(candidate_features.language) != normalize_language(current_features.language):
                     continue
             if current_features and current_features.musical_key and candidate_features and director_key_score(current_features.musical_key, candidate_features.musical_key) < 0.45:
                 continue
