@@ -60,4 +60,8 @@ timeout /t 3 /nobreak >nul
 start "" "http://127.0.0.1:%APP_PORT%"
 
 echo ydkmusic is running at http://127.0.0.1:%APP_PORT%
+echo.
+echo The ydkmusic server window will stay open while the app is running.
+echo Close the window titled "ydkmusic server" or press Ctrl+C there to stop the server.
+pause
 endlocal
