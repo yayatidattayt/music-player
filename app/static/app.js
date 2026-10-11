@@ -80,7 +80,10 @@ let frequencyData = null;
 let audioAnalyserActive = false;
 let bassEnergy = 0;
 let bassPunch = 0;
-let coverVisualizerEnabled = localStorage.getItem("sideb-cover-visualizer") !== "false";
+// Use a versioned preference so the old Lyrics-panel workaround cannot leave
+// the cover visualizer permanently hidden in an existing browser session.
+const coverVisualizerPreference = "sideb-cover-visualizer-v2";
+let coverVisualizerEnabled = localStorage.getItem(coverVisualizerPreference) !== "false";
 let coverVisualizerLevels = [];
 let peakLevels = [];
 let artThemeRequest = 0;
@@ -3764,7 +3767,7 @@ byId("now-playing-toggle").addEventListener("click", async () => {
 
 byId("now-playing-cover-toggle").addEventListener("click", () => {
   coverVisualizerEnabled = !coverVisualizerEnabled;
-  localStorage.setItem("sideb-cover-visualizer", String(coverVisualizerEnabled));
+  localStorage.setItem(coverVisualizerPreference, String(coverVisualizerEnabled));
   updateNowPlayingControls();
   showToast(coverVisualizerEnabled ? "Cover visualizer on." : "Cover visualizer off.");
 });
