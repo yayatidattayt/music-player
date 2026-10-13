@@ -52,7 +52,6 @@ const byId = (id) => document.getElementById(id);
 // control surface, not a second EQ panel or an additional audio stage.
 const equalizerPanel = byId("equalizer-panel");
 const graphicEqPanel = byId("graphic-eq-panel");
-if (equalizerPanel && graphicEqPanel) equalizerPanel.appendChild(graphicEqPanel);
 document.addEventListener("click", (event) => {
   const equalizerToggle = event.target.closest("#equalizer-toggle");
   if (!equalizerToggle) return;
@@ -63,7 +62,10 @@ document.addEventListener("click", (event) => {
   panel.hidden = !opening;
   button.setAttribute("aria-expanded", String(opening));
   button.setAttribute("aria-label", opening ? "Close equalizer" : "Open equalizer");
-  if (opening) setGraphicEqOpen(false);
+    if (opening) {
+      setGraphicEqOpen(false);
+      equalizerPanel.hidden = false;
+    }
 });
 const playlistList = byId("playlist-list");
 const playlistView = byId("playlist-view");
@@ -3745,7 +3747,9 @@ function setGraphicEqOpen(open) {
   const standardButton = byId("eq-mode-10");
   graphicEqMode = Boolean(open);
   panel.hidden = !graphicEqMode;
-  equalizer.classList.toggle("is-graphic-mode", graphicEqMode);
+  equalizer.hidden = graphicEqMode;
+  if (!graphicEqMode) equalizer.hidden = false;
+  equalizer.classList.toggle("is-graphic-mode", false);
   if (button) {
     button.setAttribute("aria-pressed", String(graphicEqMode));
     button.classList.toggle("is-active", graphicEqMode);
