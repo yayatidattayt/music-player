@@ -3742,17 +3742,23 @@ function setGraphicEqOpen(open) {
   const panel = byId("graphic-eq-panel");
   const equalizer = byId("equalizer-panel");
   const button = byId("graphic-eq-mode-toggle");
+  const standardButton = byId("eq-mode-10");
   graphicEqMode = Boolean(open);
   panel.hidden = !graphicEqMode;
   equalizer.classList.toggle("is-graphic-mode", graphicEqMode);
   if (button) {
-    button.textContent = graphicEqMode ? "10-band EQ" : "Parametric EQ 2";
     button.setAttribute("aria-pressed", String(graphicEqMode));
+    button.classList.toggle("is-active", graphicEqMode);
+  }
+  if (standardButton) {
+    standardButton.setAttribute("aria-pressed", String(!graphicEqMode));
+    standardButton.classList.toggle("is-active", !graphicEqMode);
   }
   if (graphicEqMode) { restoreGraphicEqualizer(); startGraphicEqAnimation(); }
 }
 byId("graphic-eq-close").addEventListener("click", () => setGraphicEqOpen(false));
 byId("graphic-eq-mode-toggle").addEventListener("click", () => setGraphicEqOpen(true));
+byId("eq-mode-10").addEventListener("click", () => setGraphicEqOpen(false));
 byId("graphic-eq-reset").addEventListener("click", () => setGraphicEqualizerPreset("flat"));
 byId("graphic-eq-bypass").addEventListener("click", () => {
   graphicEqBypassed = !graphicEqBypassed;

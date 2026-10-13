@@ -5119,9 +5119,11 @@ body.is-audio-playing .player-mini-wave i { animation-play-state: running; }
   backdrop-filter: blur(28px) saturate(1.35);
 }
 .equalizer-panel.is-graphic-mode { width: min(820px, calc(100vw - 32px)); }
-.equalizer-heading-actions { display: flex; align-items: center; gap: 7px; }
-.equalizer-mode-toggle { height: 31px; padding: 0 11px; border: 1px solid rgba(124,229,189,.35); border-radius: 9px; background: rgba(124,229,189,.08); color: #bff7df; font-size: .64rem; cursor: pointer; }
-.equalizer-mode-toggle:hover, .equalizer-mode-toggle[aria-pressed="true"] { border-color: #7ce5bd; background: rgba(124,229,189,.18); color: #f0fff8; }
+.equalizer-heading-actions { display: flex; align-items: center; gap: 9px; }
+.equalizer-mode-switch { display: inline-flex; align-items: center; gap: 2px; padding: 3px; border: 1px solid rgba(124,229,189,.24); border-radius: 10px; background: rgba(5,17,20,.42); }
+.equalizer-mode-switch span { padding: 0 6px; color: rgba(207,232,225,.45); font-size: .52rem; font-weight: 800; letter-spacing: .1em; }
+.equalizer-mode-switch button { height: 25px; padding: 0 8px; border: 0; border-radius: 7px; background: transparent; color: rgba(207,232,225,.62); font-size: .57rem; font-weight: 800; letter-spacing: .05em; cursor: pointer; }
+.equalizer-mode-switch button:hover, .equalizer-mode-switch button.is-active { background: #7ce5bd; color: #102b27; box-shadow: 0 2px 9px rgba(124,229,189,.2); }
 
 .graphic-eq-panel {
   position: fixed; right: 24px; bottom: 104px; z-index: 21; width: min(820px, calc(100vw - 32px)); padding: 20px 22px 17px; overflow: hidden;
@@ -5161,7 +5163,7 @@ body.is-audio-playing .player-mini-wave i { animation-play-state: running; }
 .graphic-eq-inspector input { width: 100%; height: 4px; accent-color: #7ce5bd; cursor: pointer; }
 .graphic-eq-band-toggle { height: 29px; border: 1px solid rgba(124,229,189,.38); border-radius: 7px; background: rgba(124,229,189,.12); color: #bff7df; font-size: .59rem; cursor: pointer; }
 .graphic-eq-band-toggle[aria-pressed="false"] { border-color: rgba(255,255,255,.16); background: rgba(255,255,255,.04); color: rgba(207,232,225,.52); }
-@media (max-width: 650px) { .graphic-eq-panel { right: 12px; bottom: 124px; width: calc(100vw - 24px); padding: 15px 12px 12px; } .graphic-eq-graph-wrap { height: 220px; } .graphic-eq-heading small { max-width: 180px; } .player-options .graphic-eq-button { width: 43px; min-width: 43px; font-size: .51rem; } }
+@media (max-width: 650px) { .graphic-eq-panel { right: 12px; bottom: 124px; width: calc(100vw - 24px); padding: 15px 12px 12px; } .graphic-eq-graph-wrap { height: 220px; } .graphic-eq-heading small { max-width: 180px; } .equalizer-mode-switch span { display: none; } .equalizer-mode-switch button { padding-inline: 6px; font-size: .5rem; } }
 @media (max-width: 650px) { .graphic-eq-inspector { grid-template-columns: 1fr 1fr; gap: 8px; } .graphic-eq-inspector label:first-child { grid-column: 1 / -1; } .graphic-eq-band-toggle { width: 100%; } }
 
 .equalizer-panel::before {

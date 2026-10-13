@@ -7,8 +7,8 @@
     <meta name="description" content="A simple place to keep the music you love." />
     <title>Side B — Playlist Manager</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=20261012-cover-fallback-1" />
-    <script src="/static/app.js?v=20261012-cover-fallback-1" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20261013-eq-modes-1" />
+    <script src="/static/app.js?v=20261013-eq-modes-1" defer></script>
   </head>
   <body class="auth-mode">
     <section id="auth-gate" class="auth-gate" aria-labelledby="auth-title">
@@ -483,7 +483,7 @@
             <strong>Equalizer</strong>
             <small>Shape the sound</small>
           </span>
-          <div class="equalizer-heading-actions"><button id="graphic-eq-mode-toggle" class="equalizer-mode-toggle" type="button" aria-pressed="false">Parametric EQ 2</button><button id="equalizer-reset" class="player-button" type="button">Reset</button></div>
+          <div class="equalizer-heading-actions"><div class="equalizer-mode-switch" role="group" aria-label="EQ mode"><span>MODE</span><button id="eq-mode-10" class="is-active" type="button" aria-pressed="true">10-BAND</button><button id="graphic-eq-mode-toggle" type="button" aria-pressed="false">PARAMETRIC</button></div><button id="equalizer-reset" class="player-button" type="button">Reset</button></div>
         </div>
 
         <div class="equalizer-presets" role="group" aria-label="Equalizer presets">
