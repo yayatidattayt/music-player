@@ -48,6 +48,23 @@ const state = {
 };
 
 const byId = (id) => document.getElementById(id);
+// Keep both EQ modes in one window. The parametric view is an alternative
+// control surface, not a second EQ panel or an additional audio stage.
+const equalizerPanel = byId("equalizer-panel");
+const graphicEqPanel = byId("graphic-eq-panel");
+if (equalizerPanel && graphicEqPanel) equalizerPanel.appendChild(graphicEqPanel);
+document.addEventListener("click", (event) => {
+  const equalizerToggle = event.target.closest("#equalizer-toggle");
+  if (!equalizerToggle) return;
+  setupAudioAnalyzer();
+  const panel = byId("equalizer-panel");
+  const button = equalizerToggle;
+  const opening = panel.hidden;
+  panel.hidden = !opening;
+  button.setAttribute("aria-expanded", String(opening));
+  button.setAttribute("aria-label", opening ? "Close equalizer" : "Open equalizer");
+  if (opening) setGraphicEqOpen(false);
+});
 const playlistList = byId("playlist-list");
 const playlistView = byId("playlist-view");
 const profileView = byId("profile-view");
@@ -65,9 +82,11 @@ const HOME_FEATURE_TRACK = {
   title: "Middle of the Night",
   artist: "Elley Duhé",
   album: "Middle of the Night",
-  audio_url: "/media/middle-of-the-night.mp3",
-  cover_url: "/covers/middle-of-the-night.jpg",
-  duration_seconds: 190,
+  // The previous local path was never shipped with the repository, so the
+  // login page loaded a dead source and Chrome reported "no supported sources".
+  audio_url: "/api/auth/feature-preview",
+  cover_url: "/api/auth/feature-cover",
+  duration_seconds: 30,
   play_count: 0,
   lyrics: "",
 };
@@ -76,6 +95,12 @@ let audioContext = null;
 let analyser = null;
 let audioSource = null;
 let equalizerFilters = [];
+let graphicEqualizerFilters = [];
+let graphicEqSettings = [];
+let graphicEqSelectedIndex = 0;
+let graphicEqSpectrumFrame = 0;
+let graphicEqBypassed = false;
+let graphicEqMode = false;
 let frequencyData = null;
 let audioAnalyserActive = false;
 let bassEnergy = 0;
@@ -90,9 +115,17 @@ let artThemeRequest = 0;
 let artThemeUrl = null;
 let previewFadeFrame = 0;
 let homePreviewFadeFrame = 0;
+let authPreviewWaitingForGesture = false;
 const authVisualizerLevels = new Float32Array(88);
 const EQ_FREQUENCIES = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000, 16000];
 const EQ_STORAGE_KEY = "sideb-equalizer";
+const GRAPHIC_EQ_FREQUENCIES = [60, 180, 450, 1000, 2400, 6000, 14000];
+const GRAPHIC_EQ_STORAGE_KEY = "sideb-graphic-equalizer";
+const GRAPHIC_EQ_DEFAULTS = GRAPHIC_EQ_FREQUENCIES.map((frequency) => ({ frequency, gain: 0, q: 1.05, type: "peaking", enabled: true }));
+const GRAPHIC_EQ_PRESETS = {
+  flat: [0, 0, 0, 0, 0, 0, 0], bass: [8, 6, 3, 0, -1, -2, -2],
+  smile: [6, 3, 0, -2, -1, 3, 6], vocal: [-3, -2, 1, 5, 4, 2, -1], club: [7, 4, 1, -2, 3, 5, 4],
+};
 const EQ_PRESETS = {
   flat: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   bass: [5, 4, 3, 1, 0, 0, -1, -2, -2, -2],
@@ -129,6 +162,8 @@ async function toggleAuthPreview() {
     cancelPreviewVolumeRamps();
     audioEngine.pause();
   } else {
+    authPreviewWaitingForGesture = false;
+    audioEngine.muted = false;
     await playTrack(HOME_FEATURE_TRACK, { fadeIn: true });
   }
   if (!audioEngine.paused) setAuthStatus("");
@@ -207,6 +242,21 @@ function setAuthStatus(message, tone = "") {
   const status = byId("auth-status");
   status.textContent = message;
   status.className = `auth-status ${tone}`.trim();
+}
+
+async function unlockAuthPreview() {
+  if (!authPreviewWaitingForGesture || playerTrack?.id !== HOME_FEATURE_TRACK.id) return;
+  authPreviewWaitingForGesture = false;
+  audioEngine.muted = false;
+  audioEngine.volume = Number(byId("auth-volume")?.value ?? 0.55);
+  try {
+    if (audioContext?.state === "suspended") await audioContext.resume();
+    if (audioEngine.paused) await audioEngine.play();
+    setAuthStatus("");
+    updatePlayerDisplay();
+  } catch {
+    setAuthStatus("Press Play to start the preview.", "is-error");
+  }
 }
 
 function startAuthenticatedApp(user) {
@@ -819,6 +869,19 @@ function setupAudioAnalyzer() {
     return filter;
   });
 
+  if (!graphicEqSettings.length) graphicEqSettings = GRAPHIC_EQ_DEFAULTS.map((band) => ({ ...band }));
+  graphicEqualizerFilters = GRAPHIC_EQ_FREQUENCIES.map((frequency, index) => {
+    const filter = audioContext.createBiquadFilter();
+    const band = graphicEqSettings[index];
+    filter.type = band.type;
+    filter.frequency.value = band.frequency || frequency;
+    filter.Q.value = band.q;
+    filter.gain.value = band.enabled ? band.gain : 0;
+    previousNode.connect(filter);
+    previousNode = filter;
+    return filter;
+  });
+
   analyser = audioContext.createAnalyser();
   analyser.fftSize = 128;
   analyser.smoothingTimeConstant = 0.82;
@@ -826,6 +889,7 @@ function setupAudioAnalyzer() {
   analyser.connect(audioContext.destination);
   frequencyData = new Uint8Array(analyser.frequencyBinCount);
   restoreEqualizer();
+  restoreGraphicEqualizer();
 }
 
 function sampleAnalyserFrame() {
@@ -1733,6 +1797,10 @@ function renderLyrics() {
 }
 
 async function analyzeAudioLyricsOffset(track = playerTrack) {
+  // The login feature is a remote Apple promo preview, not a user track with
+  // lyrics. Avoid fetching/decoding it for lyric alignment; that request is
+  // commonly blocked by cross-origin audio headers and is unrelated to play.
+  if (track?.id === HOME_FEATURE_TRACK.id) return 0;
   if (!track?.audio_url || !window.OfflineAudioContext && !window.webkitOfflineAudioContext) return 0;
   if (state.lyricAnalyzing && state.lyricAnalysisTrackId === track.id) return state.lyricOffset;
 
@@ -2107,6 +2175,7 @@ async function playTrack(track, options = {}) {
   updateMediaSession();
   updateArtTheme(track.cover_url || state.activePlaylist?.cover_url);
   audioEngine.src = track.audio_url;
+  audioEngine.crossOrigin = track.id === HOME_FEATURE_TRACK.id ? "anonymous" : "";
   state.listenProgress = 0;
   state.lastPlaybackTime = null;
   state.countedListenTrackId = null;
@@ -2120,16 +2189,23 @@ async function playTrack(track, options = {}) {
 
   if (options.autoplay !== false) {
     try {
+      if (options.authAutoplay) {
+        // Chrome/Safari allow muted autoplay. Keep the preview running from
+        // the login-page load, then unlock sound on the first real gesture.
+        audioEngine.muted = true;
+        audioEngine.volume = Number(byId("auth-volume")?.value ?? 0.55);
+      }
       await audioEngine.play();
-      if (options.authAutoplay && audioContext?.state === "suspended") {
-        audioEngine.pause();
-        setAuthStatus("Your browser needs a Play tap before it can enable audio. Press Play to start the music.", "is-error");
+      if (options.authAutoplay) {
+        authPreviewWaitingForGesture = true;
+        setAuthStatus("Preview ready — tap once anywhere to turn sound on.");
       } else if (options.fadeIn) {
         fadeInAuthPreview();
       }
     } catch {
       if (options.authAutoplay) {
-        setAuthStatus("Your browser blocked sound from starting automatically. Press Play to start the music.", "is-error");
+        authPreviewWaitingForGesture = false;
+        setAuthStatus("Preview unavailable right now. Press Play to try again.", "is-error");
       } else {
         showToast("The audio file could not be played.", true);
       }
@@ -3505,20 +3581,207 @@ function setEqualizerPreset(name) {
   });
 }
 
-byId("equalizer-toggle").addEventListener("click", () => {
-  setupAudioAnalyzer();
-  restoreEqualizer();
-  const panel = byId("equalizer-panel");
-  const button = byId("equalizer-toggle");
-  const opening = panel.hidden;
-  panel.hidden = !opening;
-  button.setAttribute("aria-expanded", String(opening));
-  button.setAttribute("aria-label", opening ? "Close equalizer" : "Open equalizer");
-});
+function graphicEqualizerValues() {
+  return graphicEqSettings.map((band) => band.gain);
+}
+
+function updateGraphicEqFilter(index) {
+  const filter = graphicEqualizerFilters[index];
+  const band = graphicEqSettings[index];
+  if (!filter || !band) return;
+  filter.type = band.type;
+  filter.frequency.setTargetAtTime(band.frequency, audioContext?.currentTime || 0, .012);
+  filter.Q.setTargetAtTime(band.q, audioContext?.currentTime || 0, .012);
+  filter.gain.setTargetAtTime(!graphicEqBypassed && band.enabled ? band.gain : 0, audioContext?.currentTime || 0, .012);
+}
+
+function graphicEqFrequencyToSlider(frequency) {
+  return Math.round((Math.log10(Math.max(20, Math.min(20000, frequency))) - Math.log10(20)) / 3 * 1000);
+}
+
+function graphicEqSliderToFrequency(value) {
+  return 20 * (10 ** (Math.max(0, Math.min(1000, Number(value))) / 1000 * 3));
+}
+
+function persistGraphicEq() {
+  localStorage.setItem(GRAPHIC_EQ_STORAGE_KEY, JSON.stringify(graphicEqSettings));
+}
+
+function normalizeGraphicEqBand(value, index) {
+  const defaults = GRAPHIC_EQ_DEFAULTS[index];
+  const candidate = value && typeof value === "object" ? value : {};
+  const types = new Set(["highpass", "lowshelf", "peaking", "notch", "highshelf", "lowpass"]);
+  const frequency = Number(candidate.frequency);
+  const gain = Number(candidate.gain);
+  const q = Number(candidate.q);
+  return {
+    ...defaults,
+    ...candidate,
+    frequency: Number.isFinite(frequency) ? Math.round(Math.max(20, Math.min(20000, frequency))) : defaults.frequency,
+    gain: Number.isFinite(gain) ? Math.max(-18, Math.min(18, gain)) : defaults.gain,
+    q: Number.isFinite(q) ? Math.max(.1, Math.min(18, q)) : defaults.q,
+    type: types.has(candidate.type) ? candidate.type : defaults.type,
+    enabled: candidate.enabled !== false,
+  };
+}
+
+function syncGraphicEqInspector() {
+  const band = graphicEqSettings[graphicEqSelectedIndex] || GRAPHIC_EQ_DEFAULTS[0];
+  byId("graphic-eq-type").value = band.type;
+  byId("graphic-eq-frequency").value = String(graphicEqFrequencyToSlider(band.frequency));
+  byId("graphic-eq-gain").value = String(band.gain);
+  byId("graphic-eq-q").value = String(band.q);
+  byId("graphic-eq-frequency-value").textContent = `${band.frequency >= 1000 ? `${(band.frequency / 1000).toFixed(band.frequency % 1000 ? 1 : 0)}k` : band.frequency} Hz`;
+  byId("graphic-eq-gain-value").textContent = `${band.gain > 0 ? "+" : ""}${band.gain.toFixed(1)} dB`;
+  byId("graphic-eq-q-value").textContent = band.q.toFixed(2);
+  const toggle = byId("graphic-eq-band-toggle");
+  toggle.textContent = band.enabled ? "Band on" : "Band off";
+  toggle.setAttribute("aria-pressed", String(band.enabled));
+  const bypass = byId("graphic-eq-bypass");
+  bypass.textContent = graphicEqBypassed ? "Bypassed" : "Bypass";
+  bypass.setAttribute("aria-pressed", String(graphicEqBypassed));
+  document.querySelectorAll("[data-geq-select]").forEach((button) => button.classList.toggle("is-selected", Number(button.dataset.geqSelect) === graphicEqSelectedIndex));
+}
+
+function drawGraphicEqualizer(selectedIndex = -1) {
+  const canvas = byId("graphic-eq-graph");
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.round(rect.width * ratio));
+  canvas.height = Math.max(1, Math.round(rect.height * ratio));
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  const width = rect.width;
+  const height = rect.height;
+  const pad = { left: 8, right: 10, top: 10, bottom: 10 };
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const xFor = (frequency) => pad.left + ((Math.log10(frequency) - Math.log10(20)) / 3) * plotW;
+  const yFor = (gain) => pad.top + ((18 - gain) / 36) * plotH;
+  ctx.clearRect(0, 0, width, height);
+  const bg = ctx.createLinearGradient(0, 0, 0, height);
+  bg.addColorStop(0, "rgba(15, 29, 39, .98)"); bg.addColorStop(1, "rgba(26, 43, 51, .94)");
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = "rgba(122, 180, 198, .12)"; ctx.lineWidth = 1;
+  [18, 12, 6, 0, -6, -12, -18].forEach((gain) => { const y = yFor(gain); ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(width - pad.right, y); ctx.stroke(); });
+  [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000].forEach((frequency) => { const x = xFor(frequency); ctx.beginPath(); ctx.moveTo(x, pad.top); ctx.lineTo(x, height - pad.bottom); ctx.stroke(); });
+  if (audioAnalyserActive && frequencyData?.length) {
+    ctx.beginPath();
+    for (let index = 0; index < frequencyData.length; index += 1) {
+      const frequency = (index / frequencyData.length) * (audioContext?.sampleRate || 44100) / 2;
+      if (frequency < 20 || frequency > 20000) continue;
+      const x = xFor(frequency); const y = pad.top + ((255 - frequencyData[index]) / 255) * plotH * .82;
+      index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.strokeStyle = "rgba(126, 197, 210, .35)"; ctx.lineWidth = 1.2; ctx.shadowBlur = 0; ctx.stroke();
+  }
+  const points = graphicEqSettings
+    .map((band, index) => ({ index, frequency: band.frequency, x: xFor(band.frequency), y: yFor(band.enabled && !graphicEqBypassed ? band.gain : 0), gain: band.enabled && !graphicEqBypassed ? band.gain : 0, enabled: band.enabled }))
+    .sort((left, right) => left.frequency - right.frequency);
+  if (points.length) {
+    const curvePoints = [{ x: xFor(20), y: yFor(0), gain: 0 }, ...points, { x: xFor(20000), y: yFor(0), gain: 0 }];
+    const fill = ctx.createLinearGradient(0, 0, 0, height); fill.addColorStop(0, "rgba(111, 230, 189, .24)"); fill.addColorStop(1, "rgba(111, 230, 189, 0)");
+    ctx.beginPath(); ctx.moveTo(curvePoints[0].x, height - pad.bottom); curvePoints.forEach((point) => ctx.lineTo(point.x, point.y)); ctx.lineTo(curvePoints.at(-1).x, height - pad.bottom); ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+    ctx.beginPath(); curvePoints.forEach((point, index) => { if (!index) return ctx.moveTo(point.x, point.y); const previous = curvePoints[index - 1]; const midX = (previous.x + point.x) / 2; ctx.quadraticCurveTo(previous.x, previous.y, midX, (previous.y + point.y) / 2); ctx.quadraticCurveTo(midX, (previous.y + point.y) / 2, point.x, point.y); }); ctx.strokeStyle = graphicEqBypassed ? "rgba(180, 205, 201, .45)" : "#7ce5bd"; ctx.lineWidth = 2.5; ctx.shadowColor = "rgba(124,229,189,.6)"; ctx.shadowBlur = graphicEqBypassed ? 0 : 10; ctx.stroke(); ctx.shadowBlur = 0;
+    points.forEach((point) => { const selected = point.index === selectedIndex; ctx.beginPath(); ctx.arc(point.x, point.y, selected ? 10 : 8, 0, Math.PI * 2); ctx.fillStyle = !point.enabled ? "#17262b" : selected ? "#eaffd9" : "#263e46"; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = !point.enabled ? "#526568" : selected ? "#7ce5bd" : "#8fb4b5"; ctx.stroke(); ctx.fillStyle = selected ? "#173b35" : "#d9f5e9"; ctx.font = "700 10px Inter, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(String(point.index + 1), point.x, point.y); });
+  }
+}
+
+function startGraphicEqAnimation() {
+  if (graphicEqSpectrumFrame) return;
+  const animate = () => {
+    if (byId("graphic-eq-panel").hidden) { graphicEqSpectrumFrame = 0; return; }
+    drawGraphicEqualizer(graphicEqSelectedIndex);
+    graphicEqSpectrumFrame = requestAnimationFrame(animate);
+  };
+  graphicEqSpectrumFrame = requestAnimationFrame(animate);
+}
+
+function applyGraphicEqualizer(values, selectedIndex = -1) {
+  if (!graphicEqSettings.length) graphicEqSettings = GRAPHIC_EQ_DEFAULTS.map((band) => ({ ...band }));
+  graphicEqSettings.forEach((band, index) => { band.gain = Math.max(-18, Math.min(18, Number(values[index] ?? 0))); updateGraphicEqFilter(index); });
+  persistGraphicEq();
+  if (selectedIndex >= 0) { graphicEqSelectedIndex = selectedIndex; syncGraphicEqInspector(); }
+  const readout = byId("graphic-eq-readout");
+  if (readout && selectedIndex >= 0) readout.textContent = `${graphicEqSettings[selectedIndex].frequency >= 1000 ? `${(graphicEqSettings[selectedIndex].frequency / 1000).toFixed(1)}k` : graphicEqSettings[selectedIndex].frequency} Hz · ${graphicEqSettings[selectedIndex].gain > 0 ? "+" : ""}${graphicEqSettings[selectedIndex].gain.toFixed(1)} dB`;
+  drawGraphicEqualizer(selectedIndex);
+}
+
+function restoreGraphicEqualizer() {
+  const saved = JSON.parse(localStorage.getItem(GRAPHIC_EQ_STORAGE_KEY) || "null");
+  graphicEqSettings = Array.isArray(saved) && saved.length === GRAPHIC_EQ_FREQUENCIES.length
+    ? saved.map((band, index) => normalizeGraphicEqBand(typeof band === "object" ? band : { gain: Number(band) || 0 }, index))
+    : GRAPHIC_EQ_DEFAULTS.map((band) => ({ ...band }));
+  graphicEqSettings.forEach((_, index) => updateGraphicEqFilter(index));
+  syncGraphicEqInspector();
+  drawGraphicEqualizer();
+}
+
+function setGraphicEqualizerPreset(name) {
+  setupAudioAnalyzer(); applyGraphicEqualizer(GRAPHIC_EQ_PRESETS[name] || GRAPHIC_EQ_PRESETS.flat);
+  document.querySelectorAll("[data-geq-preset]").forEach((button) => button.classList.toggle("is-active", button.dataset.geqPreset === name));
+}
+
+let graphicEqDragIndex = -1;
+function graphicEqPointer(event) {
+  const canvas = byId("graphic-eq-graph"); const rect = canvas.getBoundingClientRect();
+  const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+  const y = Math.max(0, Math.min(rect.height, event.clientY - rect.top));
+  const frequency = 20 * (10 ** (x / rect.width * 3));
+  const nearest = graphicEqSettings.reduce((best, band, index) => Math.abs(Math.log(band.frequency / frequency)) < Math.abs(Math.log(graphicEqSettings[best].frequency / frequency)) ? index : best, 0);
+  return { index: nearest, frequency, gain: 18 - (y / rect.height) * 36 };
+}
 
 byId("equalizer-reset").addEventListener("click", () => {
   setEqualizerPreset("flat");
 });
+
+function setGraphicEqOpen(open) {
+  setupAudioAnalyzer();
+  const panel = byId("graphic-eq-panel");
+  const equalizer = byId("equalizer-panel");
+  const button = byId("graphic-eq-mode-toggle");
+  graphicEqMode = Boolean(open);
+  panel.hidden = !graphicEqMode;
+  equalizer.classList.toggle("is-graphic-mode", graphicEqMode);
+  if (button) {
+    button.textContent = graphicEqMode ? "10-band EQ" : "Parametric EQ 2";
+    button.setAttribute("aria-pressed", String(graphicEqMode));
+  }
+  if (graphicEqMode) { restoreGraphicEqualizer(); startGraphicEqAnimation(); }
+}
+byId("graphic-eq-close").addEventListener("click", () => setGraphicEqOpen(false));
+byId("graphic-eq-mode-toggle").addEventListener("click", () => setGraphicEqOpen(true));
+byId("graphic-eq-reset").addEventListener("click", () => setGraphicEqualizerPreset("flat"));
+byId("graphic-eq-bypass").addEventListener("click", () => {
+  graphicEqBypassed = !graphicEqBypassed;
+  graphicEqSettings.forEach((_, index) => updateGraphicEqFilter(index));
+  syncGraphicEqInspector();
+  drawGraphicEqualizer(graphicEqSelectedIndex);
+});
+document.querySelectorAll("[data-geq-select]").forEach((button) => button.addEventListener("click", () => {
+  graphicEqSelectedIndex = Number(button.dataset.geqSelect);
+  syncGraphicEqInspector();
+  drawGraphicEqualizer(graphicEqSelectedIndex);
+}));
+byId("graphic-eq-type").addEventListener("input", (event) => { graphicEqSettings[graphicEqSelectedIndex].type = event.target.value; updateGraphicEqFilter(graphicEqSelectedIndex); persistGraphicEq(); drawGraphicEqualizer(graphicEqSelectedIndex); });
+byId("graphic-eq-frequency").addEventListener("input", (event) => { graphicEqSettings[graphicEqSelectedIndex].frequency = Math.round(graphicEqSliderToFrequency(event.target.value)); updateGraphicEqFilter(graphicEqSelectedIndex); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqSelectedIndex); });
+byId("graphic-eq-gain").addEventListener("input", (event) => { graphicEqSettings[graphicEqSelectedIndex].gain = Number(event.target.value); updateGraphicEqFilter(graphicEqSelectedIndex); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqSelectedIndex); });
+byId("graphic-eq-q").addEventListener("input", (event) => { graphicEqSettings[graphicEqSelectedIndex].q = Number(event.target.value); updateGraphicEqFilter(graphicEqSelectedIndex); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqSelectedIndex); });
+byId("graphic-eq-band-toggle").addEventListener("click", () => { const band = graphicEqSettings[graphicEqSelectedIndex]; band.enabled = !band.enabled; updateGraphicEqFilter(graphicEqSelectedIndex); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqSelectedIndex); });
+document.querySelectorAll("[data-geq-preset]").forEach((button) => button.addEventListener("click", () => setGraphicEqualizerPreset(button.dataset.geqPreset)));
+byId("graphic-eq-graph").addEventListener("pointerdown", (event) => {
+  const point = graphicEqPointer(event); graphicEqDragIndex = point.index; graphicEqSelectedIndex = point.index; event.currentTarget.setPointerCapture(event.pointerId);
+  graphicEqSettings[point.index].frequency = Math.round(point.frequency); graphicEqSettings[point.index].gain = point.gain; updateGraphicEqFilter(point.index); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(point.index);
+});
+byId("graphic-eq-graph").addEventListener("pointermove", (event) => {
+  if (graphicEqDragIndex < 0) return;
+  const point = graphicEqPointer(event); const band = graphicEqSettings[graphicEqDragIndex]; band.frequency = Math.round(point.frequency); band.gain = point.gain; updateGraphicEqFilter(graphicEqDragIndex); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqDragIndex);
+});
+byId("graphic-eq-graph").addEventListener("pointerup", () => { graphicEqDragIndex = -1; });
+byId("graphic-eq-graph").addEventListener("pointercancel", () => { graphicEqDragIndex = -1; });
+window.addEventListener("resize", () => { if (!byId("graphic-eq-panel").hidden) drawGraphicEqualizer(); });
 
 document.querySelectorAll("[data-eq-band]").forEach((input) => {
   input.addEventListener("input", () => {
@@ -3954,6 +4217,8 @@ byId("auth-signup-form").addEventListener("submit", (event) => submitAuth("signu
 byId("logout-button").addEventListener("click", logout);
 byId("profile-button").addEventListener("click", openProfile);
 byId("auth-visual-play").addEventListener("click", toggleAuthPreview);
+document.addEventListener("pointerdown", () => { void unlockAuthPreview(); }, { capture: true });
+document.addEventListener("keydown", () => { void unlockAuthPreview(); }, { capture: true });
 byId("room-button").addEventListener("click", openRoomDialog);
 byId("room-create-submit").addEventListener("click", createRoom);
 byId("room-join-submit").addEventListener("click", joinRoom);

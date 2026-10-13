@@ -1,6 +1,7 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
+if exist "%LOCALAPPDATA%\Microsoft\WinGet\Links" set "PATH=%PATH%;%LOCALAPPDATA%\Microsoft\WinGet\Links"
 
 echo Starting ydkmusic...
 
@@ -19,6 +20,25 @@ if errorlevel 1 (
     exit /b 1
 )
 
+where node >nul 2>&1
+if errorlevel 1 (
+    echo Node.js is missing. Run setup_ydkmusic.bat first.
+    pause
+    exit /b 1
+)
+where tsc >nul 2>&1
+if errorlevel 1 (
+    echo TypeScript is missing. Run setup_ydkmusic.bat first, then open a new terminal.
+    pause
+    exit /b 1
+)
+where ffmpeg >nul 2>&1
+if errorlevel 1 if not exist "ffmpeg.exe" (
+    echo FFmpeg is missing. Run setup_ydkmusic.bat first, then open a new terminal.
+    pause
+    exit /b 1
+)
+
 where powershell >nul 2>&1
 if errorlevel 1 (
     echo Windows PowerShell was not found. This Windows installation cannot start the browser automatically.
@@ -27,10 +47,6 @@ if errorlevel 1 (
 )
 
 set "APP_PORT=8000"
-set "HEALTH_FILE=%TEMP%\ydkmusic-health.json"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8000/health' -TimeoutSec 2 | Select-Object -ExpandProperty Content | Set-Content -Encoding UTF8 '%HEALTH_FILE%'; exit 0 } catch { exit 1 }" >nul 2>&1
-if not errorlevel 1 goto :server_ready
-
 set "APP_PORT="
 for /L %%P in (8000,1,8010) do (
     netstat -ano | findstr /R /C:":%%P .*LISTENING" >nul 2>&1

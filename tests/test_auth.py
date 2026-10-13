@@ -182,10 +182,20 @@ class AccountFlowTests(unittest.TestCase):
             )
 
         user, token = self.signup(" Person@Example.Test ", "  Test   Person ")
+        original_token = token
         self.assertEqual(user["email"], "person@example.test")
         self.assertEqual(user["display_name"], "Test Person")
         self.assertFalse(user["is_admin"])
         self.assertEqual(get_current_user(cookie_request(token), self.db).id, user["id"])
+
+        # Legacy/local databases may contain mixed-case email records.
+        stored_user = self.db.scalar(select(User).where(User.id == user["id"]))
+        stored_user.email = "Person@Example.TEST"
+        self.db.commit()
+        mixed_case_response = Response()
+        mixed_case_login = login(LoginRequest(email="  PERSON@example.test\u200b ", password="strong-pass-123"), mixed_case_response, self.db)
+        self.assertEqual(mixed_case_login["id"], user["id"])
+        token = response_cookie(mixed_case_response)
 
         with self.assertRaises(HTTPException) as duplicate_error:
             signup(
@@ -206,6 +216,7 @@ class AccountFlowTests(unittest.TestCase):
         self.assertEqual(bad_login.exception.status_code, 401)
 
         logout(cookie_request(token), Response(), self.db)
+        logout(cookie_request(original_token), Response(), self.db)
         with self.assertRaises(HTTPException):
             get_current_user(cookie_request(token), self.db)
         self.assertIsNone(self.db.scalar(select(AuthSession).where(AuthSession.user_id == user["id"])))

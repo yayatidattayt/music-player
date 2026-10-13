@@ -1,6 +1,6 @@
 from pathlib import Path
 from datetime import datetime, timezone
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Annotated
 from uuid import uuid4
 from urllib.error import HTTPError, URLError
@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import ssl
+import unicodedata
 import yt_dlp
 from difflib import SequenceMatcher
 from html import escape, unescape
@@ -669,10 +670,123 @@ def lookup_cover_art(title: str, artist: str | None) -> dict:
                 "cover_url": artwork,
                 "genre": best.get("primaryGenreName"),
                 "album": best.get("collectionName"),
+                "preview_url": best.get("previewUrl"),
             }
     except Exception:
         pass
 
+    return {}
+
+
+def song_search_variants(title: str, artist: str | None = None) -> list[str]:
+    """Build stable, de-branded queries for catalogs and web search."""
+    title_variants = lyric_candidates(title, artist)
+    artist_variants = lyric_artist_candidates(artist or "") or [""]
+    queries: list[str] = []
+    for clean_title in title_variants[:5]:
+        for clean_artist in artist_variants[:4]:
+            value = " ".join(part for part in (clean_title, clean_artist) if part).strip()
+            if value and value.casefold() not in {item.casefold() for item in queries}:
+                queries.append(value)
+    return queries or [" ".join(part for part in (title, artist or "") if part).strip()]
+
+
+def parse_public_analysis(text: str) -> tuple[float | None, str | None]:
+    """Extract conservative BPM/key values from a result page or snippet."""
+    flattened = re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", text)))
+    bpm_match = re.search(
+        r"(?:\b(4[0-9]|[5-9][0-9]|1[0-9]{2}|2[0-2][0-9])\s*(?:bpm|beats\s+per\s+minute)\b|"
+        r"\bbpm\s*[:\-]?\s*(4[0-9]|[5-9][0-9]|1[0-9]{2}|2[0-2][0-9])\b)",
+        flattened,
+        re.I,
+    )
+    key_match = re.search(
+        r"\b(?:key|key\s+of|tonality)\s*[:\-]?\s*"
+        r"([A-G](?:[#♯b♭]|/\s*[A-G](?:[#♯b♭])?)?\s*(?:major|minor|maj|min|m)?)\b",
+        flattened,
+        re.I,
+    )
+    if not key_match:
+        key_match = re.search(
+            r"\b([A-G](?:[#♯b♭])?\s+(?:major|minor|maj|min))\b",
+            flattened,
+            re.I,
+        )
+    return (
+        float(next(group for group in bpm_match.groups() if group)) if bpm_match else None,
+        key_match.group(1).strip() if key_match else None,
+    )
+
+
+def combine_analysis_matches(matches: list[dict]) -> dict:
+    """Prefer values repeated by independent sources and reject obvious outliers."""
+    bpm_values = [float(item["bpm"]) for item in matches if item.get("bpm")]
+    key_values = [str(item["key"]).strip() for item in matches if item.get("key")]
+    bpm = None
+    if bpm_values:
+        # Treat common half/double-time reports as the same recording family.
+        normalized = []
+        for value in bpm_values:
+            while value < 70:
+                value *= 2
+            while value > 180:
+                value /= 2
+            normalized.append(value)
+        bpm = round(sum(normalized) / len(normalized), 1)
+        if all(abs(value - bpm) > 18 for value in normalized):
+            bpm = round(normalized[0], 1)
+    key = None
+    if key_values:
+        def key_family(value: str) -> str:
+            return re.sub(r"\s+(?:major|minor|maj|min|m)$", "", value.casefold()).replace("♯", "#").replace("♭", "b").strip()
+        key = max(key_values, key=lambda value: sum(key_family(value) == key_family(other) for other in key_values))
+    return {"bpm": bpm, "key": key}
+
+
+def analyze_youtube_audio(title: str, artist: str | None) -> dict:
+    """Analyze a best-match YouTube recording only when catalogs lack features."""
+    query = song_search_variants(title, artist)[0]
+    temporary_audio: Path | None = None
+    try:
+        with yt_dlp.YoutubeDL({
+            "quiet": True,
+            "noplaylist": True,
+            "extract_flat": True,
+            "socket_timeout": 12,
+        }) as ydl:
+            search = ydl.extract_info(f"ytsearch1:{query}", download=False)
+        entry = next(iter((search or {}).get("entries") or []), None)
+        url = (entry or {}).get("webpage_url") or (entry or {}).get("original_url")
+        if not url and (entry or {}).get("id"):
+            url = f"https://www.youtube.com/watch?v={entry['id']}"
+        if not url:
+            return {}
+
+        with TemporaryDirectory(prefix="ydk-song-lab-") as directory:
+            output = Path(directory) / "analysis.%(ext)s"
+            options = {
+                "format": "bestaudio/best",
+                "noplaylist": True,
+                "quiet": True,
+                "noprogress": True,
+                "retries": 1,
+                "fragment_retries": 1,
+                "socket_timeout": 15,
+                "outtmpl": str(output),
+                "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "128"}],
+            }
+            if ffmpeg := find_ffmpeg():
+                options["ffmpeg_location"] = ffmpeg
+            with yt_dlp.YoutubeDL(options) as ydl:
+                ydl.download([url])
+            temporary_audio = next(iter(Path(directory).glob("analysis.*")), None)
+            if not temporary_audio or temporary_audio.suffix == ".part":
+                return {}
+            features = analyze_audio_features(temporary_audio)
+            if features.get("bpm") and features.get("key"):
+                return {**features, "source": "YouTube audio analysis (estimated)", "source_url": url}
+    except Exception:
+        return {}
     return {}
 
 def extract_embedded_cover(file_path: Path) -> dict | None:
@@ -786,6 +900,49 @@ def save_remote_cover(url: str | None) -> dict | None:
             "path": str(saved_path.relative_to(UPLOAD_DIR)),
             "content_type": content_type,
         }
+    except Exception:
+        return None
+
+
+def youtube_thumbnail(info: dict) -> str | None:
+    """Pick the largest usable thumbnail returned by yt-dlp."""
+    thumbnail = info.get("thumbnail")
+    thumbnails = info.get("thumbnails") or []
+    if thumbnails:
+        candidates = [item for item in thumbnails if isinstance(item, dict) and item.get("url")]
+        if candidates:
+            thumbnail = max(
+                candidates,
+                key=lambda item: (item.get("width") or 0) * (item.get("height") or 0),
+            ).get("url")
+    return str(thumbnail).strip() if thumbnail else None
+
+
+def find_ffmpeg() -> str | None:
+    """Find FFmpeg from PATH, the project bundle, or WinGet's user links."""
+    candidates = [
+        shutil.which("ffmpeg"),
+        str(UPLOAD_DIR.parent.parent / "ffmpeg.exe"),
+        str(Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Links" / "ffmpeg.exe"),
+    ]
+    return next((candidate for candidate in candidates if candidate and Path(candidate).exists()), None)
+
+
+def lookup_youtube_thumbnail(title: str, artist: str | None) -> str | None:
+    """Find a source thumbnail for older imports missing catalog artwork."""
+    query = " ".join(part for part in (title, artist or "") if part).strip()
+    if not query:
+        return None
+    try:
+        with yt_dlp.YoutubeDL({
+            "quiet": True,
+            "noplaylist": True,
+            "extract_flat": True,
+            "socket_timeout": 12,
+        }) as ydl:
+            result = ydl.extract_info(f"ytsearch1:{query}", download=False)
+        entry = next(iter((result or {}).get("entries") or []), None)
+        return youtube_thumbnail(entry or {})
     except Exception:
         return None
 
@@ -953,51 +1110,79 @@ def analyze_song(song: str = Query(..., min_length=2, max_length=160), artist: s
         except Exception:
             pass
 
-    # Search result snippets often carry the BPM/key published by specialist
-    # music sites even when their pages do not expose a public API.
+    # Search several independent specialist indexes. A value is only surfaced
+    # after normalizing and comparing the returned candidates, which avoids
+    # taking the first unrelated snippet for common song names.
     web_matches = []
-    exact_recording = " ".join(part for part in (song, artist_query) if part)
-    for search_url, source_name in (
-        (f"https://www.google.com/search?q={quote('site:songbpm.com ' + exact_recording)}", "SongBPM via Google"),
-        (f"https://www.google.com/search?q={quote(exact_recording + ' BPM key')}", "Google web results"),
-        (f"https://html.duckduckgo.com/html/?q={quote(exact_recording + ' BPM key')}", "DuckDuckGo web results"),
-    ):
-        try:
-            request = Request(search_url, headers={"User-Agent": "Mozilla/5.0 Side B Song Lab"})
-            with urlopen(request, timeout=8, context=PUBLIC_LOOKUP_SSL) as response:
-                page = unescape(response.read().decode("utf-8", errors="ignore"))
-            text = re.sub(r"<[^>]+>", " ", page)
-            text = re.sub(r"\s+", " ", text)
-            bpm_match = re.search(r"\b(4[0-9]|[5-9][0-9]|1[0-9]{2}|2[0-2][0-9])\s*(?:bpm|beats per minute)\b", text, re.I)
-            key_match = re.search(r"\b(?:key|key of|tonality)\s*[:\-]?\s*([A-G](?:[#♯b♭]|/\s*[A-G](?:[#♯b♭])?)?\s*(?:major|minor|maj|min|m)?)\b", text, re.I)
-            if bpm_match or key_match:
-                web_matches.append({
-                    "source": source_name,
-                    "bpm": float(bpm_match.group(1)) if bpm_match else None,
-                    "key": key_match.group(1).strip() if key_match else None,
-                })
-        except (HTTPError, URLError, TimeoutError, ValueError, OSError):
-            continue
+    search_queries = song_search_variants(query, artist_query)
+    site_sources = (
+        ("songbpm.com", "SongBPM"),
+        ("tunebat.com", "TuneBat"),
+        ("musicstax.com", "Musicstax"),
+        ("getsongbpm.com", "GetSongBPM"),
+    )
+    search_targets = [(f"site:{site} {candidate} BPM key", source) for site, source in site_sources for candidate in search_queries[:2]]
+    search_targets.extend((f"{candidate} BPM key", "Google web results") for candidate in search_queries[:2])
+    search_targets.extend((f"{candidate} BPM key", "DuckDuckGo web results") for candidate in search_queries[:2])
+    for target, source_name in search_targets:
+        for engine_url in (
+            f"https://www.google.com/search?q={quote(target)}",
+            f"https://html.duckduckgo.com/html/?q={quote(target)}",
+        ) if source_name in {"Google web results", "DuckDuckGo web results"} else (f"https://www.google.com/search?q={quote(target)}",):
+            try:
+                request = Request(engine_url, headers={"User-Agent": "Mozilla/5.0 Side B Song Lab"})
+                with urlopen(request, timeout=7, context=PUBLIC_LOOKUP_SSL) as response:
+                    page = response.read().decode("utf-8", errors="ignore")
+                bpm_value, key_value = parse_public_analysis(page)
+                if bpm_value or key_value:
+                    web_matches.append({"source": source_name, "bpm": bpm_value, "key": key_value})
+                break
+            except (HTTPError, URLError, TimeoutError, ValueError, OSError):
+                continue
 
     if web_matches:
-        bpm_values = [item["bpm"] for item in web_matches if item["bpm"]]
-        key_values = [item["key"] for item in web_matches if item["key"]]
         web_artwork = lookup_cover_art(query, artist_query)
+        combined = combine_analysis_matches(web_matches)
+        if not combined.get("bpm") or not combined.get("key"):
+            audio_features = analyze_catalog_preview(web_artwork.get("preview_url"))
+            if not audio_features.get("bpm") or not audio_features.get("key"):
+                audio_features = analyze_youtube_audio(query, artist_query)
+            combined["bpm"] = combined.get("bpm") or audio_features.get("bpm")
+            combined["key"] = combined.get("key") or audio_features.get("key")
         return {
             "source": " + ".join(dict.fromkeys(item["source"] for item in web_matches)),
             "query": query,
-            "title": query,
-            "artist": None,
-            "album": None,
+            "title": web_artwork.get("title") or query,
+            "artist": web_artwork.get("artist") or artist_query or None,
+            "album": web_artwork.get("album"),
             "duration_seconds": None,
-            "bpm": round(sum(bpm_values) / len(bpm_values), 1) if bpm_values else None,
-            "key": key_values[0] if key_values else None,
+            "bpm": combined.get("bpm"),
+            "key": combined.get("key"),
             "genre": web_artwork.get("genre"),
             "preview_url": None,
             "cover_url": web_artwork.get("cover_url"),
-            "note": "Values were found in public web-result snippets. Confirm them against the exact recording when versions differ.",
+            "note": "Matched across public music-analysis indexes; values can vary for live, remix, and half-time versions.",
         }
     artwork_fallback = lookup_cover_art(query, artist_query)
+    preview_features = analyze_catalog_preview(artwork_fallback.get("preview_url"))
+    if not preview_features.get("bpm") or not preview_features.get("key"):
+        preview_features = analyze_youtube_audio(query, artist_query)
+    if preview_features.get("bpm") and preview_features.get("key"):
+        return {
+            "source": preview_features.get("source", "Audio analysis (estimated)"),
+            "query": query,
+            "title": artwork_fallback.get("title") or query,
+            "artist": artwork_fallback.get("artist") or artist_query or None,
+            "album": artwork_fallback.get("album"),
+            "duration_seconds": None,
+            "bpm": preview_features["bpm"],
+            "key": preview_features["key"],
+            "genre": artwork_fallback.get("genre"),
+            "preview_url": artwork_fallback.get("preview_url"),
+            "cover_url": artwork_fallback.get("cover_url"),
+            "source_url": preview_features.get("source_url"),
+            "note": "BPM and key were estimated from the matched audio recording.",
+        }
     if artwork_fallback.get("cover_url"):
         return {
             "source": "Apple Music artwork catalog",
@@ -1435,6 +1620,12 @@ def enrich_track_metadata(track_id: int, db: DbSession) -> Track:
             track.album = catalog["album"]
         if not track.cover_path and catalog.get("cover_url"):
             cover = save_remote_cover(catalog["cover_url"])
+            if cover:
+                track.cover_filename = cover["filename"]
+                track.cover_path = cover["path"]
+                track.cover_content_type = cover["content_type"]
+        if not track.cover_path:
+            cover = save_remote_cover(lookup_youtube_thumbnail(cleaned_title, known_artist))
             if cover:
                 track.cover_filename = cover["filename"]
                 track.cover_path = cover["path"]
@@ -2207,31 +2398,54 @@ def listening_stats(db: DbSession) -> dict:
     }
 
 
-def lyric_candidates(value: str) -> list[str]:
-    cleaned = " ".join(value.replace("_", " ").split()).strip()
-    candidates = [cleaned] if cleaned else []
-    simplified = cleaned.split("(", 1)[0].strip()
-    simplified = simplified.split("[", 1)[0].strip()
-    if simplified and simplified not in candidates:
-        candidates.append(simplified)
-    for marker in (" - Remastered", " Remastered", " (Deluxe Edition)"):
-        if marker.lower() in simplified.lower():
-            variant = simplified.lower().replace(marker.lower(), "").strip()
-            if variant and variant not in candidates:
-                candidates.append(variant)
+def normalize_lyric_text(value: str | None) -> str:
+    """Normalize accents, punctuation, and separators for lyric matching."""
+    normalized = unicodedata.normalize("NFKD", str(value or ""))
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    normalized = normalized.casefold().replace("&", " and ")
+    return re.sub(r"[^a-z0-9]+", " ", normalized).strip()
+
+
+def unique_lyric_candidates(values: list[str]) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = " ".join(str(value or "").replace("_", " ").split()).strip(" -|·:")
+        key = normalize_lyric_text(cleaned)
+        if cleaned and key and key not in seen:
+            seen.add(key)
+            candidates.append(cleaned)
     return candidates
+
+
+def lyric_candidates(value: str, artist: str | None = None) -> list[str]:
+    """Return canonical title variants, ordered from safest to broadest."""
+    raw = " ".join(str(value or "").replace("_", " ").split()).strip()
+    cleaned = clean_imported_title(raw, artist) if raw else ""
+    variants = [cleaned, catalog_title(raw, artist), raw]
+    for candidate in list(variants):
+        if not candidate:
+            continue
+        variants.extend([
+            re.sub(r"^\s*\d+\s*[-.)]\s*", "", candidate),
+            re.sub(r"\s*[([{][^)\]}]*[)\]}]", "", candidate),
+            re.sub(r"\s*[-|·:]\s*(?:official|audio|lyrics?|video|visualizer)\s*$", "", candidate, flags=re.I),
+        ])
+    return unique_lyric_candidates(variants)
 
 
 def lyric_artist_candidates(value: str) -> list[str]:
-    candidates = lyric_candidates(value)
-    for marker in (" official", " official music", " music channel", " topic"):
-        for candidate in list(candidates):
-            lowered = candidate.casefold()
-            if lowered.endswith(marker):
-                trimmed = candidate[: -len(marker)].strip()
-                if trimmed and trimmed not in candidates:
-                    candidates.append(trimmed)
-    return candidates
+    """Return combined and individual artist names from imported metadata."""
+    raw = " ".join(str(value or "").replace("_", " ").split()).strip()
+    cleaned = re.sub(
+        r"\s*(?:[-|·:]\s*)?(?:official|official\s+music|music\s+channel|topic|records?|vevo)\s*$",
+        "",
+        raw,
+        flags=re.I,
+    ).strip(" -|·:")
+    variants = [cleaned, raw]
+    variants.extend(re.split(r"\s*(?:/|,|&|\band\b|\bfeat(?:uring)?\.?\b|\bft\.?\b)\s*", cleaned, flags=re.I))
+    return unique_lyric_candidates(variants)
 
 
 def fetch_json(url: str) -> dict:
@@ -2253,6 +2467,31 @@ def fetch_lrclib(artist: str, title: str) -> str | None:
     return plain or None
 
 
+def fetch_lrclib_search(artist: str, title: str) -> str | None:
+    """Search LRCLIB and accept only a close title/artist recording match."""
+    query = urlencode({"q": f"{title} {artist}".strip()})
+    payload = fetch_json(f"https://lrclib.net/api/search?{query}")
+    results = payload if isinstance(payload, list) else payload.get("results") or []
+    wanted_title = normalize_lyric_text(title)
+    wanted_artist = normalize_lyric_text(artist)
+
+    def score(item: dict) -> float:
+        result_title = normalize_lyric_text(item.get("trackName") or item.get("name"))
+        result_artist = normalize_lyric_text(item.get("artistName") or item.get("artist"))
+        title_score = SequenceMatcher(None, wanted_title, result_title).ratio()
+        artist_score = SequenceMatcher(None, wanted_artist, result_artist).ratio()
+        if wanted_title and (wanted_title == result_title or wanted_title in result_title or result_title in wanted_title):
+            title_score = max(title_score, .94)
+        if wanted_artist and (wanted_artist == result_artist or wanted_artist in result_artist or result_artist in wanted_artist):
+            artist_score = max(artist_score, .9)
+        return title_score * .7 + artist_score * .3
+
+    best = max((item for item in results if isinstance(item, dict)), key=score, default=None)
+    if not best or score(best) < .76:
+        return None
+    return str(best.get("syncedLyrics") or best.get("plainLyrics") or "").strip() or None
+
+
 def fetch_lyrics_ovh(artist: str, title: str) -> str | None:
     payload = fetch_json(f"https://api.lyrics.ovh/v1/{quote(artist)}/{quote(title)}")
     lyrics = str(payload.get("lyrics") or "").strip()
@@ -2263,22 +2502,36 @@ def fetch_lyrics_ovh(artist: str, title: str) -> str | None:
 def fetch_track_lyrics(track_id: int, db: DbSession) -> dict[str, str | None]:
     track = get_track_or_404(track_id, db)
     artists = lyric_artist_candidates(track.artist)
-    titles = lyric_candidates(track.title)
-    titles.extend(
-        candidate for candidate in lyric_candidates(catalog_title(track.title, track.artist))
-        if candidate not in titles
-    )
-    providers = (("LRCLIB", fetch_lrclib), ("Lyrics.ovh", fetch_lyrics_ovh))
+    titles = lyric_candidates(track.title, track.artist)
 
     for artist in artists:
         for title in titles:
-            for source, provider in providers:
-                try:
-                    lyrics = provider(artist, title)
-                except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, ValueError):
-                    continue
-                if lyrics:
-                    return {"lyrics": lyrics, "source": source}
+            try:
+                lyrics = fetch_lrclib(artist, title)
+            except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, ValueError, OSError):
+                lyrics = None
+            if lyrics:
+                return {"lyrics": lyrics, "source": "LRCLIB"}
+
+    # Search LRCLIB only after exact lookups have failed. The score guard keeps
+    # broad queries from returning a similarly named song.
+    for artist in artists[:3]:
+        for title in titles[:3]:
+            try:
+                lyrics = fetch_lrclib_search(artist, title)
+            except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, ValueError, OSError):
+                lyrics = None
+            if lyrics:
+                return {"lyrics": lyrics, "source": "LRCLIB search"}
+
+    for artist in artists:
+        for title in titles:
+            try:
+                lyrics = fetch_lyrics_ovh(artist, title)
+            except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, ValueError, OSError):
+                lyrics = None
+            if lyrics:
+                return {"lyrics": lyrics, "source": "Lyrics.ovh"}
 
     raise HTTPException(status_code=404, detail="Lyrics could not be found from the available sources.")
 
@@ -2403,7 +2656,7 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
         'quiet': True,
     }
     bundled_ffmpeg = UPLOAD_DIR.parent.parent / "ffmpeg.exe"
-    ffmpeg_location = str(bundled_ffmpeg) if bundled_ffmpeg.exists() else shutil.which("ffmpeg")
+    ffmpeg_location = find_ffmpeg() or (str(bundled_ffmpeg) if bundled_ffmpeg.exists() else None)
     if ffmpeg_location:
         ydl_opts['ffmpeg_location'] = ffmpeg_location
 
@@ -2446,6 +2699,11 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
         remote_cover = embedded_cover
         if not remote_cover and catalog.get("cover_url"):
             remote_cover = save_remote_cover(catalog["cover_url"])
+        if not remote_cover:
+            # Catalog artwork is optional and can be unavailable for regional
+            # or newly uploaded YouTube results. The source thumbnail is the
+            # reliable final fallback for every YouTube import.
+            remote_cover = save_remote_cover(youtube_thumbnail(info))
         ensure_unique_track(playlist.id, final_title, final_artist, db)
         stored_audio_path = store_audio_file(downloaded_path, audio_filename, "audio/mpeg")
 

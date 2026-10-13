@@ -7,8 +7,8 @@
     <meta name="description" content="A simple place to keep the music you love." />
     <title>Side B — Playlist Manager</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=20261011-44" />
-    <script src="/static/app.js?v=20261011-54" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20261012-cover-fallback-1" />
+    <script src="/static/app.js?v=20261012-cover-fallback-1" defer></script>
   </head>
   <body class="auth-mode">
     <section id="auth-gate" class="auth-gate" aria-labelledby="auth-title">
@@ -19,15 +19,16 @@
           <div class="auth-visual-copy"><span class="eyebrow">A quieter place for music</span><h2>Keep the songs<br /><em>that keep you.</em></h2><p>Build your own little corner of the internet — one record, one mood, one replay at a time.</p></div>
           <div class="auth-orbit" aria-hidden="true"><canvas id="auth-visualizer" class="auth-radial-visualizer"></canvas><div class="auth-orbit-ring auth-orbit-ring-one"></div><div class="auth-orbit-ring auth-orbit-ring-two"></div><div class="auth-record"><span class="auth-record-label"></span><span class="auth-record-hole"></span></div><div class="auth-tone auth-tone-one"></div><div class="auth-tone auth-tone-two"></div></div>
           <div class="auth-mini-player"><button id="auth-visual-play" class="auth-play-button is-paused" type="button" aria-label="Play Middle of the Night" aria-pressed="false">▶</button><span class="auth-track-cover" aria-hidden="true"></span><div class="auth-mini-copy"><strong id="auth-track-title">Middle of the Night</strong><span>Elley Duhé · <span id="auth-mini-duration">3:10</span></span></div><label class="auth-volume-control" aria-label="Preview volume"><span aria-hidden="true">♫</span><input id="auth-volume" type="range" min="0" max="1" step="0.01" value="0.55" aria-label="Preview volume" /></label></div>
-          <div class="auth-visual-footer"><span id="auth-current-time">0:00</span><label class="auth-progress" aria-label="Song position"><input id="auth-seek" type="range" min="0" max="184" step="0.1" value="0" aria-label="Seek through Middle of the Night" /><i id="auth-progress-fill"></i></label><span id="auth-duration">3:04</span></div>
+          <div class="auth-visual-footer"><span id="auth-current-time">0:00</span><label class="auth-progress" aria-label="Song position"><input id="auth-seek" type="range" min="0" max="30" step="0.1" value="0" aria-label="Seek through Middle of the Night" /><i id="auth-progress-fill"></i></label><span id="auth-duration">0:30</span></div>
+          <a class="auth-preview-credit" href="https://www.youtube.com/watch?v=Ky1dduzoEe0" target="_blank" rel="noreferrer">Preview from YouTube · Open original ↗</a>
         </section>
         <section class="auth-panel">
           <div class="auth-panel-heading"><span class="eyebrow" id="auth-kicker">Your private music shelf</span><span class="auth-quiet-mark">♪</span></div>
           <h1 id="auth-title">Welcome back.</h1>
           <p id="auth-intro" class="auth-intro">Sign in to keep your playlists, songs, and listening history together.</p>
           <div class="auth-tabs" role="tablist" aria-label="Account access">
-            <button id="auth-login-tab" class="auth-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="auth-login-panel">Log in</button>
-            <button id="auth-signup-tab" class="auth-tab" type="button" role="tab" aria-selected="false" aria-controls="auth-signup-panel">Create account</button>
+          <button id="auth-login-tab" class="auth-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="auth-login-form">Log in</button>
+          <button id="auth-signup-tab" class="auth-tab" type="button" role="tab" aria-selected="false" aria-controls="auth-signup-form">Create account</button>
           </div>
           <form id="auth-login-form" class="auth-form" role="tabpanel" aria-labelledby="auth-login-tab" tabindex="0">
             <label for="login-email">Email</label>
@@ -451,13 +452,38 @@
         </button>
       </div>
 
+      <div id="graphic-eq-panel" class="graphic-eq-panel" hidden aria-label="Parametric EQ 2 alternative">
+        <div class="graphic-eq-heading">
+          <span><strong>Parametric EQ 2 <em>alternative</em></strong><small>Use this mode instead of the 10-band EQ</small></span>
+          <div class="graphic-eq-actions"><button id="graphic-eq-bypass" class="player-button graphic-eq-bypass" type="button" aria-pressed="false">Bypass</button><button id="graphic-eq-reset" class="player-button" type="button">Reset</button><button id="graphic-eq-close" class="player-button" type="button" aria-label="Show 10-band equalizer">10-band</button></div>
+        </div>
+        <div class="graphic-eq-toolbar">
+          <div class="graphic-eq-presets" role="group" aria-label="Graphic equalizer presets">
+            <button type="button" data-geq-preset="flat">Flat</button><button type="button" data-geq-preset="bass">Bass</button><button type="button" data-geq-preset="smile">Smile</button><button type="button" data-geq-preset="vocal">Vocal</button><button type="button" data-geq-preset="club">Club</button>
+          </div><span class="graphic-eq-range">±18 dB</span>
+        </div>
+        <div class="graphic-eq-graph-wrap"><canvas id="graphic-eq-graph" class="graphic-eq-graph" aria-label="Drag the numbered EQ points to shape the curve"></canvas><div class="graphic-eq-y-labels" aria-hidden="true"><span>+18</span><span>+12</span><span>+6</span><span>0</span><span>-6</span><span>-12</span><span>-18</span></div></div>
+        <div class="graphic-eq-frequencies" aria-hidden="true"><span>20</span><span>50</span><span>100</span><span>200</span><span>500</span><span>1k</span><span>2k</span><span>5k</span><span>10k</span><span>20k</span></div>
+        <div class="graphic-eq-readout" id="graphic-eq-readout" aria-live="polite">Select a point to edit its gain</div>
+        <div class="graphic-eq-band-strip" role="group" aria-label="Graphic EQ bands">
+          <button type="button" data-geq-select="0" class="is-selected">1</button><button type="button" data-geq-select="1">2</button><button type="button" data-geq-select="2">3</button><button type="button" data-geq-select="3">4</button><button type="button" data-geq-select="4">5</button><button type="button" data-geq-select="5">6</button><button type="button" data-geq-select="6">7</button>
+        </div>
+        <div class="graphic-eq-inspector" aria-label="Selected graphic EQ band controls">
+          <label>Type<select id="graphic-eq-type"><option value="highpass">Low cut</option><option value="lowshelf">Low shelf</option><option value="peaking" selected>Bell</option><option value="notch">Notch</option><option value="highshelf">High shelf</option><option value="lowpass">High cut</option></select></label>
+          <label>Frequency<strong><output id="graphic-eq-frequency-value">60 Hz</output></strong><input id="graphic-eq-frequency" type="range" min="0" max="1000" step="1" value="159"></label>
+          <label>Gain<strong><output id="graphic-eq-gain-value">0.0 dB</output></strong><input id="graphic-eq-gain" type="range" min="-18" max="18" step="0.1" value="0"></label>
+          <label>Q / BW<strong><output id="graphic-eq-q-value">1.05</output></strong><input id="graphic-eq-q" type="range" min="0.1" max="18" step="0.01" value="1.05"></label>
+          <button id="graphic-eq-band-toggle" class="graphic-eq-band-toggle" type="button" aria-pressed="true">Band on</button>
+        </div>
+      </div>
+
       <div id="equalizer-panel" class="equalizer-panel" hidden aria-label="10-band equalizer">
         <div class="equalizer-heading">
           <span>
             <strong>Equalizer</strong>
             <small>Shape the sound</small>
           </span>
-          <button id="equalizer-reset" class="player-button" type="button">Reset</button>
+          <div class="equalizer-heading-actions"><button id="graphic-eq-mode-toggle" class="equalizer-mode-toggle" type="button" aria-pressed="false">Parametric EQ 2</button><button id="equalizer-reset" class="player-button" type="button">Reset</button></div>
         </div>
 
         <div class="equalizer-presets" role="group" aria-label="Equalizer presets">

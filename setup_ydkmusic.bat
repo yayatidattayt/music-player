@@ -1,6 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
+if exist "%LOCALAPPDATA%\Microsoft\WinGet\Links" set "PATH=%PATH%;%LOCALAPPDATA%\Microsoft\WinGet\Links"
 
 title Set up ydkmusic
 echo.
@@ -15,6 +16,41 @@ if not errorlevel 1 set "PYTHON_CMD=py"
 if not defined PYTHON_CMD (
     where python >nul 2>&1
     if not errorlevel 1 set "PYTHON_CMD=python"
+)
+
+where node >nul 2>&1
+if errorlevel 1 (
+    echo Node.js was not found. Installing the current LTS runtime...
+    where winget >nul 2>&1
+    if errorlevel 1 (
+        echo Node.js is required for the TypeScript tooling. Install it from https://nodejs.org/ and run this file again.
+        pause
+        exit /b 1
+    )
+    winget install --id OpenJS.NodeJS.LTS -e --source winget --accept-source-agreements --accept-package-agreements
+    if errorlevel 1 (
+        echo Node.js installation failed.
+        pause
+        exit /b 1
+    )
+)
+
+where npm >nul 2>&1
+if errorlevel 1 (
+    echo npm was not found. Restart this setup window after installing Node.js.
+    pause
+    exit /b 1
+)
+
+where tsc >nul 2>&1
+if errorlevel 1 (
+    echo Installing the TypeScript compiler...
+    call npm install --global typescript
+    if errorlevel 1 (
+        echo TypeScript installation failed.
+        pause
+        exit /b 1
+    )
 )
 if not defined PYTHON_CMD (
     echo Python was not found. Installing Python 3.12 through Windows Package Manager...
@@ -61,18 +97,23 @@ if errorlevel 1 (
 )
 type nul > ".venv\.ydkmusic-dependencies-installed-v4"
 
-if not exist "ffmpeg.exe" where ffmpeg >nul 2>&1
-if not exist "ffmpeg.exe" if errorlevel 1 (
+where ffmpeg >nul 2>&1
+if errorlevel 1 if not exist "ffmpeg.exe" (
     echo.
-    echo FFmpeg was not found. YouTube importing may need it.
+    echo FFmpeg was not found. Installing it for YouTube importing...
     where winget >nul 2>&1
     if not errorlevel 1 (
         echo Installing FFmpeg through Windows Package Manager...
-        winget install --id Gyan.FFmpeg.Shared -e --source winget --accept-source-agreements --accept-package-agreements
+        winget install --id Gyan.FFmpeg -e --source winget --accept-source-agreements --accept-package-agreements
     ) else (
         echo Install FFmpeg from https://www.gyan.dev/ffmpeg/builds/ and add it to PATH.
     )
 )
+
+echo.
+echo Checking toolchain...
+where tsc >nul 2>&1 && echo TypeScript: ready || echo TypeScript: restart this window after setup
+where ffmpeg >nul 2>&1 && echo FFmpeg: ready || echo FFmpeg: restart this window after setup
 
 echo.
 echo Setup complete. Double-click start_ydkmusic.bat to open ydkmusic.

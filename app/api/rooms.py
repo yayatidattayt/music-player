@@ -85,7 +85,15 @@ class RoomManager:
     def __init__(self) -> None:
         self.rooms: dict[str, Room] = {}
         self.code_index: dict[str, str] = {}
-        self._lock = asyncio.Lock()
+        # The module-level manager is constructed before uvicorn's event loop.
+        # Create the lock on first use so it belongs to the active loop on
+        # Windows/Python versions that bind asyncio primitives eagerly.
+        self._lock: asyncio.Lock | None = None
+
+    def _manager_lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     def _new_code(self) -> str:
         while True:
@@ -94,7 +102,7 @@ class RoomManager:
                 return code
 
     async def create(self, request: CreateRoomRequest) -> tuple[Room, Member]:
-        async with self._lock:
+        async with self._manager_lock():
             room_id = uuid4().hex
             code = self._new_code()
             member_id = uuid4().hex
@@ -106,7 +114,7 @@ class RoomManager:
             return room, member
 
     async def join(self, request: JoinRoomRequest) -> tuple[Room, Member]:
-        async with self._lock:
+        async with self._manager_lock():
             room_id = self.code_index.get(request.code.strip().upper())
             room = self.rooms.get(room_id or "")
             if not room:
@@ -141,7 +149,7 @@ class RoomManager:
 
     async def cleanup(self) -> None:
         cutoff = time.time() - ROOM_TTL_SECONDS
-        async with self._lock:
+        async with self._manager_lock():
             expired = [room_id for room_id, room in self.rooms.items() if room.updated_at < cutoff and all(item.websocket is None for item in room.members.values())]
             for room_id in expired:
                 room = self.rooms.pop(room_id)

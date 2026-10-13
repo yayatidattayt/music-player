@@ -4,11 +4,12 @@ import hashlib
 import hmac
 import re
 import secrets
+import unicodedata
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -57,7 +58,11 @@ class LoginRequest(BaseModel):
 
 
 def normalized_email(value: str) -> str:
-    return value.strip().casefold()
+    # Normalize pasted/full-width Unicode and invisible spacing before lookup.
+    # Passwords intentionally do not go through this function.
+    cleaned = unicodedata.normalize("NFKC", value or "")
+    cleaned = cleaned.replace("\u200b", "").replace("\ufeff", "")
+    return " ".join(cleaned.split()).strip().casefold()
 
 
 def is_valid_email(value: str) -> bool:
@@ -170,7 +175,7 @@ def signup(payload: SignupRequest, response: Response, db: Session = Depends(get
             else "Enter a valid email address with a real domain format."
         )
         raise HTTPException(status_code=422, detail=detail)
-    if db.scalar(select(User).where(User.email == email)):
+    if db.scalar(select(User).where(func.lower(User.email) == email)):
         raise HTTPException(status_code=409, detail="An account with that email already exists.")
     user = User(display_name=" ".join(payload.display_name.split()), email=email, password_hash=password_hash(payload.password))
     db.add(user)
@@ -181,7 +186,10 @@ def signup(payload: SignupRequest, response: Response, db: Session = Depends(get
 
 @router.post("/login")
 def login(payload: LoginRequest, response: Response, db: Session = Depends(get_db)) -> dict[str, object]:
-    user = db.scalar(select(User).where(User.email == normalized_email(payload.email)))
+    email = normalized_email(payload.email)
+    # The current signup path stores lowercase emails, but older local databases
+    # may contain mixed-case records. Make login work consistently for both.
+    user = db.scalar(select(User).where(func.lower(User.email) == email))
     if not user or not password_matches(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Email or password is incorrect.")
     return create_session(user, db, response)
