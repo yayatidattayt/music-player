@@ -100,7 +100,15 @@ app.add_middleware(
 
 @app.get("/", include_in_schema=False)
 def home() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    # The app shell contains versioned asset URLs and must not be held in a
+    # browser/proxy cache after a frontend deployment.
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 @app.get("/api/auth/feature-preview", include_in_schema=False)
