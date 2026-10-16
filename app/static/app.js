@@ -70,6 +70,17 @@ document.addEventListener("click", (event) => {
 const playlistList = byId("playlist-list");
 const playlistView = byId("playlist-view");
 const profileView = byId("profile-view");
+const pageViews = [playlistView, profileView].filter(Boolean);
+
+// Re-rendered views get the same gentle entrance as sidebar and player motion.
+const pageViewObserver = new MutationObserver((mutations) => {
+  if (!mutations.some((mutation) => mutation.type === "childList")) return;
+  const view = mutations[0]?.target?.closest?.("#playlist-view, #profile-view") || mutations[0]?.target;
+  if (!pageViews.includes(view)) return;
+  view.classList.remove("is-transitioning");
+  requestAnimationFrame(() => view.classList.add("is-transitioning"));
+});
+pageViews.forEach((view) => pageViewObserver.observe(view, { childList: true }));
 const playlistSearch = byId("playlist-search");
 const connectionLabel = byId("connection-label");
 const statusLight = document.querySelector(".status-light");
@@ -2089,6 +2100,7 @@ function updatePlayerDisplay() {
   repeatButton.setAttribute("aria-label", state.repeat ? "Repeat on" : "Repeat off");
 
   if (!playerTrack) {
+    playerBar.classList.remove("is-closing");
     playerBar.hidden = true;
     return;
   }
@@ -3887,7 +3899,14 @@ byId("player-close").addEventListener("click", () => {
   audioEngine.removeAttribute("src");
   audioEngine.load();
   playerTrack = null;
-  byId("player-bar").hidden = true;
+  const playerBar = byId("player-bar");
+  playerBar.classList.add("is-closing");
+  window.setTimeout(() => {
+    if (!playerTrack) {
+      playerBar.hidden = true;
+      playerBar.classList.remove("is-closing");
+    }
+  }, 280);
   broadcastPlaybackState();
   renderPlaylist();
 });

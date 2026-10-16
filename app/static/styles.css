@@ -4568,6 +4568,183 @@ body.auth-mode .auth-progress i { animation: none; transition: width .16s linear
 body.auth-mode .auth-current-time, body.auth-mode #auth-duration { min-width: 28px; font-variant-numeric: tabular-nums; }
 body.auth-mode .auth-mini-player { gap: 10px; }
 body.auth-mode .auth-volume-control { margin-left: auto; }
+
+/* Final surface polish: rounded, quieter chrome with a single motion language. */
+.app-shell .sidebar {
+  top: 10px;
+  bottom: 10px;
+  height: auto;
+  padding: 20px 14px 14px;
+  border: 1px solid rgba(255,255,255,.075) !important;
+  border-radius: 0 24px 24px 0;
+  box-shadow: 16px 0 42px rgba(0,0,0,.18), inset -1px 0 rgba(255,255,255,.035);
+  transition: transform .44s cubic-bezier(.22,.8,.2,1), box-shadow .44s ease, border-color .24s ease;
+}
+.app-shell .brand { padding-inline: 4px; }
+.app-shell .search-box,
+.app-shell .liked-songs-button,
+.app-shell .sidebar-tool-button,
+.app-shell .playlist-link {
+  border-radius: 13px;
+}
+.app-shell .search-box { border-color: rgba(255,255,255,.09); box-shadow: inset 0 1px rgba(255,255,255,.035); }
+.app-shell .playlist-link { transition: background .2s ease, color .2s ease, transform .2s cubic-bezier(.22,.8,.2,1), border-color .2s ease; }
+.app-shell .playlist-link:hover { transform: translateX(3px); }
+.app-shell .playlist-link.is-active { box-shadow: inset 3px 0 var(--accent), 0 8px 22px rgba(0,0,0,.12); }
+.app-shell .sidebar-footer { margin-inline: 3px; }
+
+.player-bar {
+  right: 14px;
+  bottom: 14px;
+  left: 282px;
+  min-height: 76px;
+  padding: 11px clamp(16px, 3vw, 34px);
+  border: 1px solid color-mix(in srgb, var(--art-accent, var(--accent)) 32%, rgba(255,255,255,.11)) !important;
+  border-radius: 22px;
+  box-shadow: 0 18px 48px rgba(0,0,0,.32), inset 0 1px rgba(255,255,255,.065);
+  transform-origin: 50% 100%;
+  transition: left .44s cubic-bezier(.22,.8,.2,1), right .44s cubic-bezier(.22,.8,.2,1), padding .44s ease, box-shadow .3s ease, border-color .3s ease;
+  animation: player-dock-in .36s cubic-bezier(.16,1,.3,1) both;
+}
+.player-bar.is-closing { animation: player-dock-out .28s cubic-bezier(.7,0,.84,0) both; pointer-events: none; }
+.player-art { width: 48px; height: 48px; border-radius: 14px; border-color: rgba(255,255,255,.18); box-shadow: 0 8px 20px rgba(0,0,0,.22); transition: transform .25s cubic-bezier(.22,.8,.2,1), border-radius .25s ease, box-shadow .25s ease; }
+.player-art:hover { transform: translateY(-2px) scale(1.03); border-radius: 16px; box-shadow: 0 12px 26px rgba(0,0,0,.3); }
+.player-button { border-color: rgba(255,255,255,.13); background: rgba(255,255,255,.045); transition: transform .2s cubic-bezier(.22,.8,.2,1), background .2s ease, border-color .2s ease, color .2s ease, box-shadow .2s ease; }
+.player-button:hover { transform: translateY(-1px); background: rgba(255,255,255,.1); box-shadow: 0 6px 16px rgba(0,0,0,.16); }
+.player-main-button { box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 24%, transparent); }
+.player-progress, .player-volume { border-radius: 999px; }
+.player-options { gap: 8px; }
+
+@keyframes player-dock-in { from { opacity: 0; transform: translateY(18px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes player-dock-out { from { opacity: 1; transform: translateY(0) scale(1); } to { opacity: 0; transform: translateY(18px) scale(.985); } }
+
+@media (max-width: 1000px) {
+  .player-bar { left: 242px; right: 12px; }
+}
+@media (max-width: 700px) {
+  .app-shell .sidebar { top: 0; bottom: auto; border-radius: 0 0 22px 22px; }
+  .player-bar, body.sidebar-collapsed .player-bar { right: 10px; bottom: 10px; left: 10px; border-radius: 19px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .player-bar, .player-bar.is-closing { animation: none; }
+  .app-shell .playlist-link:hover, .player-art:hover, .player-button:hover { transform: none; }
+}
+
+/* Clean mode: keep the visual identity, remove the competing layers. */
+:root {
+  --surface-clean: rgba(31, 35, 30, .88);
+  --surface-clean-soft: rgba(255,255,255,.035);
+  --line-clean: rgba(255,255,255,.09);
+}
+.main-area { background: #171916; }
+.topbar { min-height: 58px; padding-block: 10px; background: rgba(23,25,22,.78); backdrop-filter: blur(18px); }
+.playlist-view { padding-top: clamp(30px, 4.5vw, 58px); }
+.playlist-hero { gap: clamp(22px, 3.5vw, 40px); padding-bottom: 28px; }
+.hero-cover { border-radius: 18px; box-shadow: 0 14px 30px rgba(0,0,0,.22); }
+.hero-title { font-size: clamp(34px, 4.8vw, 58px); }
+.hero-actions, .songs-tools { gap: 9px; }
+.button, .track-filter, .track-sort { border-radius: 10px; }
+.track-table { overflow: hidden; border: 1px solid var(--line-clean); border-radius: 16px; background: rgba(20,23,20,.32); }
+.track-labels { border-bottom-color: var(--line-clean); }
+.track-row { border-bottom-color: rgba(255,255,255,.055); border-radius: 0; }
+.track-row:last-child { border-bottom: 0; }
+.track-row:hover, .track-row:focus-within { background: rgba(255,255,255,.045); }
+.track-swatch { border-radius: 10px; }
+.row-action { border-radius: 9px; }
+.home-stats article, .home-playlist-card, .home-section, .mood-card, .playback-queue, .lyrics-panel { border-color: var(--line-clean); box-shadow: 0 12px 32px rgba(0,0,0,.12), inset 0 1px rgba(255,255,255,.035); }
+.home-stats article:hover, .home-playlist-card:hover { box-shadow: 0 16px 38px rgba(0,0,0,.18), inset 0 1px rgba(255,255,255,.05); }
+.dialog-form input, .dialog-form textarea, .edit-dialog, .toast { border-radius: 12px; }
+.edit-dialog { box-shadow: 0 24px 70px rgba(0,0,0,.42); }
+.toast { box-shadow: 0 12px 32px rgba(0,0,0,.25); }
+
+@media (max-width: 760px) {
+  .playlist-view { padding-inline: 18px; }
+  .playlist-hero { grid-template-columns: 112px minmax(0, 1fr); gap: 18px; }
+  .hero-cover { width: 112px; }
+  .hero-title { font-size: clamp(30px, 9vw, 44px); }
+}
+
+/* Motion refinement: longer settles, smaller travel, and fewer visual jolts. */
+.home-playlist-card,
+.mood-card,
+.lyric-of-day,
+.home-stats article { transition-duration: .34s; }
+.home-playlist-card:hover,
+.mood-card:hover,
+.lyric-of-day:hover,
+.home-stats article:hover { transform: translateY(-2px); }
+body.is-audio-playing .player-bar { animation-duration: 6.5s; animation-timing-function: ease-in-out; }
+.now-playing.is-open .now-playing-art { animation-duration: .72s; animation-timing-function: cubic-bezier(.22,.8,.2,1); }
+.now-playing.is-open .now-playing-info > * { animation-duration: .56s; animation-timing-function: cubic-bezier(.22,.8,.2,1); }
+.now-playing.is-open .now-playing-info > *:nth-child(1) { animation-delay: .03s; }
+.now-playing.is-open .now-playing-info > *:nth-child(2) { animation-delay: .07s; }
+.now-playing.is-open .now-playing-info > *:nth-child(3) { animation-delay: .11s; }
+.now-playing.is-open .now-playing-info > *:nth-child(4) { animation-delay: .15s; }
+.now-playing.is-open .now-playing-info > *:nth-child(5) { animation-delay: .19s; }
+.now-playing.is-open .now-playing-info > *:nth-child(6) { animation-delay: .23s; }
+.now-playing.is-open .now-playing-info > *:nth-child(7) { animation-delay: .27s; }
+.now-playing.is-open .now-playing-info > *:nth-child(8) { animation-delay: .31s; }
+body.is-audio-playing .now-playing-main-control { animation-duration: 4.2s; }
+.lyrics-view p.is-current { animation-duration: .72s; animation-timing-function: cubic-bezier(.22,.8,.2,1); }
+.lyrics-panel:not([hidden]) { animation-duration: .42s; animation-timing-function: cubic-bezier(.22,.8,.2,1); }
+.now-playing-controls button:hover,
+.now-playing-actions button:hover,
+.now-playing-volume button:hover,
+.now-playing-like:hover,
+.now-playing-close:hover,
+.lyrics-edit:hover,
+.queue-clear:hover { transform: translateY(-1px); }
+.sidebar-reopen { transition-duration: .44s; }
+.app-shell .playlist-link { transition-duration: .28s; }
+.button, .row-action, .player-button, .track-row, .queue-item { transition-duration: .26s; }
+
+@media (prefers-reduced-motion: reduce) {
+  body.is-audio-playing .player-bar,
+  body.is-audio-playing .now-playing-main-control,
+  .now-playing.is-open .now-playing-art,
+  .now-playing.is-open .now-playing-info > *,
+  .lyrics-view p.is-current,
+  .lyrics-panel:not([hidden]) { animation: none !important; }
+}
+
+/* One shared spatial rhythm for navigation, pages, sidebar, and player. */
+:root { --surface-motion: .56s cubic-bezier(.22,.8,.2,1); }
+.sidebar,
+.main-area,
+.player-bar,
+.sidebar-reopen { transition-duration: .56s; transition-timing-function: cubic-bezier(.22,.8,.2,1); }
+.main-area { will-change: margin-left; }
+.sidebar, .player-bar { will-change: transform, left, right, padding; }
+.sidebar-reopen { transition-property: transform, opacity, background, box-shadow; }
+.player-bar { transition-property: left, right, padding, grid-template-columns, background, box-shadow, border-color; }
+.app-shell .sidebar { box-shadow: 16px 0 42px rgba(0,0,0,.16), inset -1px 0 rgba(255,255,255,.035); }
+body.sidebar-collapsed .app-shell .sidebar { box-shadow: 8px 0 30px rgba(0,0,0,.08); }
+
+@keyframes page-content-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.playlist-view.is-transitioning,
+.profile-view.is-transitioning { animation: page-content-enter .5s cubic-bezier(.22,.8,.2,1) both; }
+.playlist-view.is-transitioning > *,
+.profile-view.is-transitioning > * { animation: page-content-enter .5s cubic-bezier(.22,.8,.2,1) both; }
+
+dialog[open] { animation: dialog-enter .4s cubic-bezier(.22,.8,.2,1) both; }
+dialog::backdrop { transition: background-color .4s ease, backdrop-filter .4s ease; }
+@keyframes dialog-enter {
+  from { opacity: 0; transform: translateY(10px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.topbar, .playlist-view, .profile-view { transition: opacity .3s ease, transform .56s cubic-bezier(.22,.8,.2,1); }
+
+@media (prefers-reduced-motion: reduce) {
+  .playlist-view.is-transitioning,
+  .profile-view.is-transitioning,
+  .playlist-view.is-transitioning > *,
+  .profile-view.is-transitioning > *,
+  dialog[open] { animation: none !important; }
+  .sidebar, .main-area, .player-bar, .sidebar-reopen, .topbar, .playlist-view, .profile-view { transition-duration: .01ms !important; }
+}
 @media (max-width: 800px) {
   body.auth-mode .auth-card { height: auto; }
   body.auth-mode .auth-visual { min-height: 390px; }
