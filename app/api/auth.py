@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import hmac
 import re
 import secrets
+import json
+import base64
 import unicodedata
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import AuthSession, User
+from ..models import AuthSession, GoogleDriveConnection, User
 
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -34,6 +38,21 @@ COMMON_EMAIL_DOMAIN_TYPOS = {
     "hotmai.com": "hotmail.com",
     "icloud.con": "icloud.com",
 }
+GOOGLE_DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+
+
+def _google_flow(request: Request):
+    client_config = os.getenv("GOOGLE_OAUTH_CLIENT_JSON", "").strip()
+    if not client_config:
+        raise HTTPException(status_code=503, detail="Google Drive linking is not configured yet.")
+    from google_auth_oauthlib.flow import Flow
+
+    redirect_uri = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "").strip()
+    if not redirect_uri:
+        redirect_uri = str(request.url_for("google_drive_callback"))
+    flow = Flow.from_client_config(json.loads(client_config), scopes=GOOGLE_DRIVE_SCOPES)
+    flow.redirect_uri = redirect_uri
+    return flow
 
 
 class SignupRequest(BaseModel):
@@ -138,8 +157,8 @@ def create_session(user: User, db: Session, response: Response) -> dict[str, obj
         raw_token,
         max_age=SESSION_DAYS * 24 * 60 * 60,
         httponly=True,
-        samesite="lax",
-        secure=False,
+        samesite=os.getenv("COOKIE_SAMESITE", "lax").strip().lower(),
+        secure=os.getenv("COOKIE_SECURE", "false").strip().lower() == "true",
     )
     return user_payload(user)
 
@@ -213,3 +232,53 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db)) 
             db.commit()
     response.delete_cookie(SESSION_COOKIE)
     return {"message": "Logged out."}
+
+
+@router.get("/google-drive/connect", name="google_drive_connect")
+def google_drive_connect(request: Request, db: Session = Depends(get_db)) -> RedirectResponse:
+    user = get_current_user(request, db)
+    flow = _google_flow(request)
+    authorization_url, state = flow.authorization_url(
+        access_type="offline", include_granted_scopes="true", prompt="consent"
+    )
+    response = RedirectResponse(authorization_url, status_code=307)
+    response.set_cookie("ydkmusic_google_oauth_state", state, max_age=600, httponly=True, samesite="lax", secure=os.getenv("COOKIE_SECURE", "false").lower() == "true")
+    return response
+
+
+@router.get("/google-drive/callback", name="google_drive_callback")
+def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> RedirectResponse:
+    user = get_current_user(request, db)
+    state = request.cookies.get("ydkmusic_google_oauth_state")
+    if not state or state != request.query_params.get("state"):
+        raise HTTPException(status_code=400, detail="Google authorization state is invalid or expired.")
+    flow = _google_flow(request)
+    flow.fetch_token(authorization_response=str(request.url))
+    credentials = flow.credentials
+    token_json = credentials.to_json()
+    connection = db.scalar(select(GoogleDriveConnection).where(GoogleDriveConnection.user_id == user.id))
+    if connection:
+        connection.token_json = token_json
+    else:
+        db.add(GoogleDriveConnection(user_id=user.id, token_json=token_json))
+    db.commit()
+    response = RedirectResponse("/", status_code=303)
+    response.delete_cookie("ydkmusic_google_oauth_state")
+    return response
+
+
+@router.get("/google-drive/status")
+def google_drive_status(request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+    user = get_current_user(request, db)
+    connection = db.scalar(select(GoogleDriveConnection).where(GoogleDriveConnection.user_id == user.id))
+    return {"connected": connection is not None, "google_email": connection.google_email if connection else None}
+
+
+@router.delete("/google-drive")
+def google_drive_disconnect(request: Request, db: Session = Depends(get_db)) -> dict[str, str]:
+    user = get_current_user(request, db)
+    connection = db.scalar(select(GoogleDriveConnection).where(GoogleDriveConnection.user_id == user.id))
+    if connection:
+        db.delete(connection)
+        db.commit()
+    return {"message": "Google Drive disconnected."}

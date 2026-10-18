@@ -15,6 +15,33 @@ def r2_enabled() -> bool:
     )
 
 
+def drive_enabled() -> bool:
+    """Whether Google Drive OAuth storage has been configured."""
+    return bool(os.getenv("GOOGLE_DRIVE_TOKEN_JSON", "").strip())
+
+
+def storage_enabled() -> bool:
+    return r2_enabled() or drive_enabled()
+
+
+def _drive_service(token_json: str | None = None):
+    token_json = token_json or os.getenv("GOOGLE_DRIVE_TOKEN_JSON", "").strip()
+    if not token_json:
+        return None
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+
+    credentials = Credentials.from_authorized_user_info(
+        __import__("json").loads(token_json),
+        scopes=["https://www.googleapis.com/auth/drive.file"],
+    )
+    if credentials.expired and credentials.refresh_token:
+        from google.auth.transport.requests import Request
+
+        credentials.refresh(Request())
+    return build("drive", "v3", credentials=credentials, cache_discovery=False)
+
+
 def _client():
     if not r2_enabled():
         return None
@@ -29,7 +56,21 @@ def _client():
     )
 
 
-def upload_path(path: Path, content_type: str | None = None, key: str | None = None) -> str:
+def upload_path(path: Path, content_type: str | None = None, key: str | None = None, token_json: str | None = None) -> str:
+    if token_json or drive_enabled():
+        from googleapiclient.http import MediaFileUpload
+
+        service = _drive_service(token_json)
+        metadata = {"name": path.name}
+        folder = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip()
+        if folder:
+            metadata["parents"] = [folder]
+        created = service.files().create(
+            body=metadata,
+            media_body=MediaFileUpload(str(path), mimetype=content_type, resumable=True),
+            fields="id",
+        ).execute()
+        return f"gdrive://{created['id']}"
     client = _client()
     if client is None:
         raise RuntimeError("R2 storage is not configured.")
@@ -40,6 +81,8 @@ def upload_path(path: Path, content_type: str | None = None, key: str | None = N
 
 
 def signed_url(key: str, expires: int = 900) -> str | None:
+    if key.startswith("gdrive://"):
+        return f"/api/media/{key.removeprefix('gdrive://')}"
     client = _client()
     if client is None:
         return None
@@ -50,7 +93,30 @@ def signed_url(key: str, expires: int = 900) -> str | None:
     )
 
 
-def delete_object(key: str) -> None:
+def delete_object(key: str, token_json: str | None = None) -> None:
+    if key.startswith("gdrive://"):
+        service = _drive_service(token_json)
+        if service is not None:
+            service.files().delete(fileId=key.removeprefix("gdrive://")).execute()
+        return
     client = _client()
     if client is not None:
         client.delete_object(Bucket=os.environ["R2_BUCKET"].strip(), Key=key)
+
+
+def download_bytes(file_id: str, token_json: str | None = None) -> tuple[bytes, str | None]:
+    """Download a Google Drive object for authenticated streaming."""
+    service = _drive_service(token_json)
+    if service is None:
+        raise RuntimeError("Google Drive storage is not configured.")
+    metadata = service.files().get(fileId=file_id, fields="mimeType,name").execute()
+    request = service.files().get_media(fileId=file_id)
+    from io import BytesIO
+    from googleapiclient.http import MediaIoBaseDownload
+
+    buffer = BytesIO()
+    downloader = MediaIoBaseDownload(buffer, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    return buffer.getvalue(), metadata.get("mimeType")

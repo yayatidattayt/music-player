@@ -12,3 +12,7 @@ yt-dlp>=2025.1.0
 pytest>=8.0,<10.0
 httpx2>=2.13,<3.0
 boto3>=1.35,<2.0
+google-api-python-client>=2.180,<3.0
+google-auth>=2.40,<3.0
+google-auth-httplib2>=0.2,<1.0
+google-auth-oauthlib>=1.2,<2.0

@@ -1720,6 +1720,42 @@ body,
 .queue-copy small, .queue-empty { color: var(--muted); font-size: .76rem; }
 .queue-empty { padding: 10px 0 5px; }
 
+/* Phone-first pass: keep every interactive surface inside the safe viewport. */
+@media (max-width: 650px) {
+  html, body { min-width: 0; overflow-x: hidden; }
+  body { padding-bottom: env(safe-area-inset-bottom); }
+  .auth-gate { min-height: 100svh; padding: 12px; align-items: stretch; }
+  .auth-card { width: 100%; min-height: calc(100svh - 24px); grid-template-columns: 1fr; border-radius: 20px; }
+  .auth-visual { display: none; }
+  .auth-panel { padding: 28px 20px 22px; justify-content: center; }
+  .auth-panel h1 { font-size: clamp(32px, 10vw, 46px); }
+  .auth-form input, .auth-form .button { min-height: 48px; font-size: 16px; }
+  .topbar { position: sticky; top: 0; z-index: 8; padding-left: 14px; padding-right: 14px; }
+  .topbar-actions { gap: 5px; }
+  .topbar-actions .button { min-width: 0; padding-inline: 9px; }
+  .playlist-view { overflow: hidden; }
+  .playlist-hero { min-width: 0; }
+  .hero-title, .hero-description, .track-title, .track-artist { overflow-wrap: anywhere; }
+  .songs-heading { gap: 8px; }
+  .track-filter { min-width: 0; width: 48%; height: 36px; }
+  .track-row { grid-template-columns: 20px minmax(0, 1fr) 48px 58px; }
+  .track-main { min-width: 0; }
+  .track-actions { justify-content: flex-end; }
+  .player-bar { position: fixed; bottom: 0; z-index: 30; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+  .player-song-copy { min-width: 0; }
+  .player-song-copy strong, .player-song-copy span { max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .now-playing-content { display: flex; flex-direction: column; gap: 18px; padding: 20px 15px calc(125px + env(safe-area-inset-bottom)); overflow-y: auto; }
+  .now-playing-art { width: min(78vw, 330px); height: min(78vw, 330px); }
+  .lyrics-panel { position: static; width: 100%; height: auto; max-height: 36vh; padding: 16px; }
+  .playback-queue { width: 100%; margin-top: 0; padding: 11px; }
+  .queue-item { grid-template-columns: 18px 24px 30px minmax(0, 1fr) 25px; gap: 6px; }
+  .queue-item-actions button { width: 24px; height: 28px; }
+  .modal, .dialog, .sheet { width: calc(100vw - 24px); max-width: none; max-height: calc(100svh - 24px); overflow-y: auto; border-radius: 18px; }
+  .profile-view { padding: 20px 14px 140px; }
+  .profile-grid, .profile-stats { grid-template-columns: 1fr; }
+  .profile-card { min-width: 0; }
+}
+
 .lyrics-panel {
   position: absolute;
   top: 88px;

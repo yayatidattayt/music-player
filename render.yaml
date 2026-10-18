@@ -11,16 +11,18 @@ services:
         fromDatabase:
           name: ydkmusic-db
           property: connectionString
-      - key: R2_ENDPOINT_URL
+      - key: GOOGLE_OAUTH_CLIENT_JSON
         sync: false
-      - key: R2_ACCESS_KEY_ID
+      - key: GOOGLE_OAUTH_REDIRECT_URI
         sync: false
-      - key: R2_SECRET_ACCESS_KEY
+      - key: GOOGLE_DRIVE_FOLDER_ID
         sync: false
-      - key: R2_BUCKET
-        sync: false
-      - key: R2_REGION
-        value: auto
+      - key: CORS_ORIGINS
+        value: https://localhost,capacitor://localhost
+      - key: COOKIE_SAMESITE
+        value: none
+      - key: COOKIE_SECURE
+        value: "true"
 
 databases:
   - name: ydkmusic-db

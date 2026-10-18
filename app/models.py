@@ -38,6 +38,19 @@ class AuthSession(Base):
     user: Mapped[User] = relationship(back_populates="sessions")
 
 
+class GoogleDriveConnection(Base):
+    __tablename__ = "google_drive_connections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+    )
+    google_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    token_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class Playlist(Base):
     __tablename__ = "playlists"
 
@@ -64,6 +77,9 @@ class Playlist(Base):
     def cover_url(self) -> str | None:
         if not self.cover_path:
             return None
+
+        if self.cover_path.startswith(("r2://", "gdrive://")):
+            return f"/api/playlists/{self.id}/cover-file"
 
         filename = Path(self.cover_path).name
         return f"/covers/{filename}"
@@ -102,7 +118,7 @@ class Track(Base):
         if not self.audio_path:
             return None
 
-        if self.audio_path.startswith("r2://"):
+        if self.audio_path.startswith(("r2://", "gdrive://")):
             return f"/api/tracks/{self.id}/audio"
 
         filename = Path(self.audio_path).name
@@ -112,6 +128,9 @@ class Track(Base):
     def cover_url(self) -> str | None:
         if not self.cover_path:
             return None
+
+        if self.cover_path.startswith(("r2://", "gdrive://")):
+            return f"/api/tracks/{self.id}/cover"
 
         filename = Path(self.cover_path).name
         return f"/covers/{filename}"
@@ -155,52 +174,6 @@ class TrackFeatures(Base):
     )
 
     track: Mapped["Track"] = relationship(back_populates="features")
-
-
-class DirectorSession(Base):
-    __tablename__ = "director_sessions"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    seed_track_id: Mapped[int | None] = mapped_column(ForeignKey("tracks.id", ondelete="SET NULL"), nullable=True)
-    seed_playlist_id: Mapped[int | None] = mapped_column(ForeignKey("playlists.id", ondelete="SET NULL"), nullable=True)
-    target_duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    target_bpm: Mapped[float | None] = mapped_column(Float, nullable=True)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    tracks: Mapped[list["DirectorSessionTrack"]] = relationship(
-        back_populates="session", cascade="all, delete-orphan", order_by="DirectorSessionTrack.position"
-    )
-    feedback: Mapped[list["DirectorFeedback"]] = relationship(
-        back_populates="session", cascade="all, delete-orphan"
-    )
-
-
-class DirectorSessionTrack(Base):
-    __tablename__ = "director_session_tracks"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    session_id: Mapped[int] = mapped_column(ForeignKey("director_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
-    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), nullable=False)
-    position: Mapped[int] = mapped_column(Integer, nullable=False)
-    score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    transition: Mapped[str | None] = mapped_column(String(30), nullable=True)
-
-    session: Mapped[DirectorSession] = relationship(back_populates="tracks")
-
-
-class DirectorFeedback(Base):
-    __tablename__ = "director_feedback"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    session_id: Mapped[int] = mapped_column(ForeignKey("director_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
-    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), nullable=False)
-    event: Mapped[str] = mapped_column(String(30), nullable=False)
-    listened_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    session: Mapped[DirectorSession] = relationship(back_populates="feedback")
 
 
 class ListeningEvent(Base):

@@ -1,4 +1,5 @@
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Lock
@@ -41,6 +42,14 @@ UPLOADS_DIR = Path(__file__).parent / "uploads"
 COVERS_DIR = UPLOADS_DIR / "covers"
 FEATURE_YOUTUBE_URL = "https://www.youtube.com/watch?v=Ky1dduzoEe0"
 FEATURE_PREVIEW_FILE = UPLOADS_DIR / "middle-of-the-night-preview.m4a"
+FEATURE_LOCAL_AUDIO_FILES = (
+    UPLOADS_DIR / "middle-of-the-night.mp3",
+    UPLOADS_DIR / "middle-of-the-night.wav",
+)
+FEATURE_LOCAL_COVER_FILES = (
+    COVERS_DIR / "middle-of-the-night.jpg",
+    COVERS_DIR / "middle-of-the-night.png",
+)
 FEATURE_PREVIEW_LOCK = Lock()
 
 
@@ -56,6 +65,9 @@ def resolve_feature_youtube() -> dict:
 
 def ensure_feature_preview_file() -> Path:
     """Download the YouTube audio once, then serve it locally thereafter."""
+    for local_file in FEATURE_LOCAL_AUDIO_FILES:
+        if local_file.exists() and local_file.stat().st_size > 32_000:
+            return local_file
     if FEATURE_PREVIEW_FILE.exists() and FEATURE_PREVIEW_FILE.stat().st_size > 32_000:
         return FEATURE_PREVIEW_FILE
 
@@ -91,8 +103,11 @@ app.mount("/covers", StaticFiles(directory=COVERS_DIR), name="covers")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=[origin.strip() for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://127.0.0.1:8000,http://localhost:8000,https://localhost",
+    ).split(",") if origin.strip()],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -115,9 +130,10 @@ def home() -> FileResponse:
 def feature_preview() -> Response:
     """Serve a stable local copy of the official YouTube audio source."""
     try:
+        preview_file = ensure_feature_preview_file()
         return FileResponse(
-            ensure_feature_preview_file(),
-            media_type="audio/mp4",
+            preview_file,
+            media_type="audio/mpeg" if preview_file.suffix.lower() == ".mp3" else "audio/mp4",
             headers={"Cache-Control": "public, max-age=86400"},
         )
     except Exception:
@@ -130,6 +146,9 @@ def feature_preview() -> Response:
 @app.get("/api/auth/feature-cover", include_in_schema=False)
 def feature_cover() -> Response:
     """Resolve the login feature's YouTube thumbnail without hardcoding CDN URLs."""
+    for local_file in FEATURE_LOCAL_COVER_FILES:
+        if local_file.exists() and local_file.stat().st_size > 1_000:
+            return FileResponse(local_file, media_type="image/jpeg" if local_file.suffix.lower() == ".jpg" else "image/png")
     try:
         thumbnail = str(resolve_feature_youtube().get("thumbnail") or "").strip()
         if not thumbnail:
@@ -146,8 +165,6 @@ def feature_cover() -> Response:
 def health() -> dict[str, str]:
     return {
         "status": "ok",
-        "director_discovery_preview": "enabled",
-        "director_build": "20261011-26",
     }
 
 

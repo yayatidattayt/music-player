@@ -438,11 +438,20 @@ function renderProfile() {
       <article class="profile-card profile-account-card">
         <div class="profile-card-heading"><div><span class="eyebrow">Account</span><h2>Your details</h2></div><span class="profile-card-mark">✦</span></div>
         <dl class="profile-details"><div><dt>Email</dt><dd>${escapeHtml(user.email || "—")}</dd></div><div><dt>Library</dt><dd>${latestPlaylist ? `Last opened: ${escapeHtml(latestPlaylist.name)}` : "Ready for your first playlist"}</dd></div></dl>
+        <div class="profile-drive-connection"><span class="eyebrow">Cloud library</span><strong id="google-drive-status">Checking Google Drive…</strong><p id="google-drive-help">Connect your Drive to keep your music available across devices.</p><button id="google-drive-connect" class="button button-quiet" type="button">Connect Google Drive</button></div>
         <button id="profile-logout" class="button button-quiet profile-logout" type="button">Log out</button>
       </article>
     </section>
     <button id="profile-back" class="profile-back" type="button">← Back to your library</button>`;
   byId("profile-logout").addEventListener("click", logout);
+  byId("google-drive-connect")?.addEventListener("click", () => { window.location.href = `${apiUrl("/api/auth/google-drive/connect")}`; });
+  fetch(apiUrl("/api/auth/google-drive/status"), { credentials: configuredApiBase ? "include" : "same-origin" }).then((response) => response.json()).then((drive) => {
+    const status = byId("google-drive-status");
+    const button = byId("google-drive-connect");
+    if (!status || !button) return;
+    status.textContent = drive.connected ? `Connected${drive.google_email ? ` · ${drive.google_email}` : ""}` : "Not connected";
+    button.textContent = drive.connected ? "Reconnect Google Drive" : "Connect Google Drive";
+  }).catch(() => {});
   byId("profile-back").addEventListener("click", () => setProfileOpen(false));
 }
 
