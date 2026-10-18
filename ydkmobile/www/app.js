@@ -1,3 +1,10 @@
+const isMobileShell = window.YDKMUSIC_PLATFORM === "mobile";
+const configuredApiBase = (window.YDKMUSIC_API_BASE_URL || document.querySelector('meta[name="ydkmusic-api-base"]')?.content || "").trim().replace(/\/$/, "");
+const apiUrl = (path) => configuredApiBase ? `${configuredApiBase}${path}` : path;
+const mediaUrl = (path) => apiUrl(path);
+
+if (isMobileShell) document.documentElement.classList.add("ydkmobile-shell");
+
 let storageScope = "guest";
 const localStorage = {
   getItem: (key) => window.localStorage.getItem(`sideb-account:${storageScope}:${key}`),
@@ -96,8 +103,8 @@ const HOME_FEATURE_TRACK = {
   album: "Middle of the Night",
   // The previous local path was never shipped with the repository, so the
   // login page loaded a dead source and Chrome reported "no supported sources".
-  audio_url: "/api/auth/feature-preview",
-  cover_url: "/api/auth/feature-cover",
+  audio_url: apiUrl("/api/auth/feature-preview"),
+  cover_url: apiUrl("/api/auth/feature-cover"),
   duration_seconds: 30,
   play_count: 0,
   lyrics: "",
@@ -317,7 +324,7 @@ function startAuthenticatedApp(user) {
 
 async function initializeAuth() {
   try {
-    const response = await fetch("/api/auth/me");
+    const response = await fetch(apiUrl("/api/auth/me"), { credentials: configuredApiBase ? "include" : "same-origin" });
     const payload = await response.json();
     if (payload.authenticated) {
       startAuthenticatedApp(payload.user);
@@ -352,7 +359,7 @@ async function submitAuth(mode, event) {
   button.textContent = signup ? "Creating account…" : "Logging in…";
   setAuthStatus("");
   try {
-    const response = await fetch(`/api/auth/${signup ? "signup" : "login"}`, {
+    const response = await fetch(apiUrl(`/api/auth/${signup ? "signup" : "login"}`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -475,7 +482,7 @@ async function openProfile() {
 
 async function logout() {
   if (playerTrack?.id > 0) await flushListeningTime(playerTrack.id);
-  await fetch("/api/auth/logout", { method: "POST" });
+  await fetch(apiUrl("/api/auth/logout"), { method: "POST", credentials: configuredApiBase ? "include" : "same-origin" });
   window.location.reload();
 }
 
@@ -1614,7 +1621,7 @@ async function api(path, options = {}) {
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await fetch(path, { ...options, headers });
+  const response = await fetch(apiUrl(path), { ...options, credentials: configuredApiBase ? "include" : "same-origin", headers });
   if (response.status === 204) return null;
 
   const raw = await response.text();
@@ -1628,7 +1635,21 @@ async function api(path, options = {}) {
       : (detail || `Request failed (${response.status})`);
     throw new Error(message);
   }
-  return data;
+  return normalizeMobileUrls(data);
+}
+
+function normalizeMobileUrls(value) {
+  if (!isMobileShell || !value) return value;
+  if (Array.isArray(value)) return value.map(normalizeMobileUrls);
+  if (typeof value !== "object") return value;
+  const normalized = { ...value };
+  for (const key of ["audio_url", "cover_url"]) {
+    if (typeof normalized[key] === "string" && normalized[key].startsWith("/")) normalized[key] = mediaUrl(normalized[key]);
+  }
+  for (const [key, child] of Object.entries(normalized)) {
+    if (child && typeof child === "object") normalized[key] = normalizeMobileUrls(child);
+  }
+  return normalized;
 }
 
 
