@@ -44,7 +44,6 @@ const state = {
   authStarted: false,
   currentUser: null,
   profileLoading: false,
-  directorSessionId: null,
 };
 
 const byId = (id) => document.getElementById(id);
@@ -114,7 +113,12 @@ let graphicEqSelectedIndex = 0;
 let graphicEqSpectrumFrame = 0;
 let graphicEqBypassed = false;
 let graphicEqMode = false;
+let graphicEqHQ = false;
+let graphicEqMonitor = true;
+let graphicEqCompare = false;
+let graphicEqCompareSettings = null;
 let frequencyData = null;
+let graphicEqSpectrumEnvelope = new Float32Array(192);
 let audioAnalyserActive = false;
 let bassEnergy = 0;
 let bassPunch = 0;
@@ -896,11 +900,15 @@ function setupAudioAnalyzer() {
   });
 
   analyser = audioContext.createAnalyser();
-  analyser.fftSize = 128;
-  analyser.smoothingTimeConstant = 0.82;
+  // FL-style analyzer detail needs a dense FFT. The graph is later remapped
+  // logarithmically, so low frequencies retain detail without wasting the
+  // whole display on linear high-frequency bins.
+  analyser.fftSize = 4096;
+  analyser.smoothingTimeConstant = 0.72;
   previousNode.connect(analyser);
   analyser.connect(audioContext.destination);
   frequencyData = new Uint8Array(analyser.frequencyBinCount);
+  graphicEqSpectrumEnvelope = new Float32Array(192);
   restoreEqualizer();
   restoreGraphicEqualizer();
 }
@@ -1469,6 +1477,7 @@ function showToast(message, isError = false) {
 function renderSongLabResult(result) {
   const resultBox = byId("song-lab-result");
   const value = (item, fallback = "Not available") => item === null || item === undefined || item === "" ? fallback : escapeHtml(item);
+  state.songLabResult = result;
   resultBox.hidden = false;
   resultBox.innerHTML = `
     <div class="song-lab-result-heading">
@@ -1480,14 +1489,70 @@ function renderSongLabResult(result) {
       ${result.cover_url ? `<div class="song-lab-vinyl" aria-label="Cover artwork"><span class="song-lab-record"><img src="${escapeHtml(result.cover_url)}" alt="" /></span><span class="song-lab-label" aria-hidden="true"></span></div>` : `<div class="song-lab-vinyl song-lab-vinyl-empty" aria-hidden="true"><span class="song-lab-record">♪</span></div>`}
     </div>
     <div class="song-lab-metrics">
-      <div><strong>${value(result.bpm, "—")}</strong><span>BPM</span></div>
-      <div><strong>${value(result.key, "—")}</strong><span>Key</span></div>
+      <button class="song-lab-metric song-lab-metric-action" type="button" data-song-lab-discover="bpm" ${result.bpm == null ? "disabled" : ""}><strong>${value(result.bpm, "—")}</strong><span>BPM · find ±5</span></button>
+      <button class="song-lab-metric song-lab-metric-action" type="button" data-song-lab-discover="key" ${!result.key ? "disabled" : ""}><strong>${value(result.key, "—")}</strong><span>Key · exact matches</span></button>
       <div><strong>${formatDuration(result.duration_seconds)}</strong><span>Length</span></div>
       <div><strong>${value(result.genre, "—")}</strong><span>Genre</span></div>
     </div>
     <p class="song-lab-note">${escapeHtml(result.note || "Analysis complete.")}</p>
+    <section id="song-lab-discovery" class="song-lab-discovery" hidden></section>
     ${result.preview_url ? `<a class="song-lab-preview" href="${escapeHtml(result.preview_url)}" target="_blank" rel="noreferrer">Open preview ↗</a>` : ""}
     ${result.source_url ? `<a class="song-lab-preview" href="${escapeHtml(result.source_url)}" target="_blank" rel="noreferrer">View source ↗</a>` : ""}`;
+}
+
+function songLabPlaylistOptions() {
+  return state.playlists.length
+    ? state.playlists.map((playlist) => `<option value="${playlist.id}" ${playlist.id === state.activeId ? "selected" : ""}>${escapeHtml(playlist.name)}</option>`).join("")
+    : `<option value="">Create a playlist first</option>`;
+}
+
+function renderSongLabDiscoveries(payload) {
+  const box = byId("song-lab-discovery");
+  if (!box) return;
+  const label = payload.mode === "bpm"
+    ? `${payload.range.min}–${payload.range.max} BPM · half/double-time included`
+    : `exactly ${payload.key}`;
+  const rows = payload.tracks || [];
+  box.hidden = false;
+  box.innerHTML = `
+    <div class="song-lab-discovery-head"><div><span class="eyebrow">Related tracks</span><h4>${payload.mode === "bpm" ? "Same tempo pocket" : "Same musical key"}</h4><p>${rows.length ? `Verified matches ${label}.` : `No strict matches found for ${label}.`}</p></div><span class="song-lab-discovery-count">${payload.total} found</span></div>
+    ${rows.length ? `<div class="song-lab-discovery-list">${rows.map((track) => `
+      <article class="song-lab-discovery-row">
+        <div class="song-lab-discovery-copy"><strong>${escapeHtml(track.title)}</strong><span>${escapeHtml(track.artist)}${track.album ? ` · ${escapeHtml(track.album)}` : ""}</span><small>${track.bpm ? `${escapeHtml(track.bpm)} BPM` : ""}${track.bpm && track.key ? " · " : ""}${track.key ? escapeHtml(track.key) : ""}</small></div>
+        <button class="button button-quiet song-lab-add" type="button" data-song-lab-add='${escapeHtml(JSON.stringify(track))}'>Add</button>
+      </article>`).join("")}</div>` : `<p class="song-lab-empty">Try analyzing another recording or add more analyzed songs to your library.</p>`}
+    <div class="song-lab-discovery-actions">
+      <select class="song-lab-playlist" aria-label="Playlist for discovered songs">${songLabPlaylistOptions()}</select>
+      ${payload.has_more ? `<button class="button button-quiet" type="button" data-song-lab-more="${payload.mode}" data-song-lab-offset="${payload.offset + payload.limit}">More songs</button>` : ""}
+    </div>`;
+}
+
+async function discoverSongLab(mode, offset = 0) {
+  const result = state.songLabResult;
+  if (!result?.bpm && mode === "bpm") return;
+  if (!result?.key && mode === "key") return;
+  const box = byId("song-lab-discovery");
+  if (box) { box.hidden = false; box.innerHTML = '<p class="song-lab-loading">Searching strict matches…</p>'; }
+  try {
+    const params = new URLSearchParams({ mode, offset: String(offset), limit: "5", title: result.title || result.query || "", artist: result.artist || "" });
+    if (mode === "bpm") params.set("bpm", String(result.bpm));
+    else params.set("key", String(result.key));
+    renderSongLabDiscoveries(await api(`/api/song-lab/discover?${params}`));
+  } catch (error) {
+    if (box) box.innerHTML = `<p class="song-lab-error">${escapeHtml(error.message || "Discovery failed.")}</p>`;
+  }
+}
+
+async function addSongLabTrack(rawTrack) {
+  const playlistId = Number(byId("song-lab-discovery")?.querySelector(".song-lab-playlist")?.value);
+  if (!playlistId) return showToast("Create or choose a playlist first.", true);
+  const track = typeof rawTrack === "string" ? JSON.parse(rawTrack) : rawTrack;
+  try {
+    if (track.id) await api(`/api/playlists/${playlistId}/tracks/from-queue/${track.id}`, { method: "POST" });
+    else await api(`/api/playlists/${playlistId}/tracks`, { method: "POST", body: JSON.stringify({ title: track.title, artist: track.artist, album: track.album || null, genre: track.genre || null, duration_seconds: track.duration_seconds || null, position: 0 }) });
+    showToast(`Added “${track.title}” to the playlist.`);
+    await loadPlaylists(playlistId);
+  } catch (error) { showToast(error.message || "Could not add song.", true); }
 }
 
 async function analyzeSongFromLab() {
@@ -1557,17 +1622,6 @@ async function api(path, options = {}) {
   return data;
 }
 
-function directorFeedback(event, track = playerTrack) {
-  if (!state.directorSessionId || !track?.id || track.id < 1) return;
-  void api(`/api/director/sessions/${state.directorSessionId}/feedback`, {
-    method: "POST",
-    body: JSON.stringify({
-      track_id: track.id,
-      event,
-      listened_seconds: Math.round(audioEngine.currentTime || state.listenProgress || 0),
-    }),
-  }).catch(() => { /* Director feedback is optional and never interrupts playback. */ });
-}
 
 function formatMinutesHeard(seconds) {
   const minutes = Math.max(0, Number(seconds) || 0) / 60;
@@ -1990,21 +2044,6 @@ function addToQueue(track, playNext = false) {
   showToast(playNext ? "Added to play next." : "Added to queue.");
 }
 
-function buildSmartQueue() {
-  if (!playerTrack) return showToast("Start a song first to build a smart queue.", true);
-  const library = state.homePlaylists.flatMap((playlist) => playlist.tracks || []);
-  const candidates = library.filter((track) => track.audio_url && track.id !== playerTrack.id && !state.queue.some((queued) => queued.id === track.id));
-  const ranked = candidates.sort((a, b) => {
-    const score = (track) => (track.artist === playerTrack.artist ? 5 : 0) + (track.genre && track.genre === playerTrack.genre ? 4 : 0) + (trackMood(track) === trackMood(playerTrack) ? 3 : 0) + (track.play_count || 0) * .01;
-    return score(b) - score(a);
-  });
-  state.queue.push(...ranked.slice(0, 8));
-  localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
-  renderQueue();
-  broadcastQueue();
-  showToast("Smart flow added to your queue.");
-}
-
 function closeNowPlaying() {
   const nowPlaying = byId("now-playing");
   state.nowPlayingClosing = true;
@@ -2178,7 +2217,7 @@ async function playTrack(track, options = {}) {
   }
 
   if (playerTrack?.id > 0 && playerTrack.id !== track.id) {
-    if (audioEngine.currentTime < 20) directorFeedback("skip", playerTrack);
+    if (audioEngine.currentTime < 20)
     void flushListeningTime(playerTrack.id);
   }
   playerTrack = track;
@@ -2204,15 +2243,20 @@ async function playTrack(track, options = {}) {
   if (options.autoplay !== false) {
     try {
       if (options.authAutoplay) {
-        // Chrome/Safari allow muted autoplay. Keep the preview running from
-        // the login-page load, then unlock sound on the first real gesture.
-        audioEngine.muted = true;
+        // Try audible autoplay first. Browsers may reject it; in that case
+        // keep the preview moving silently and unlock it on the first gesture.
+        audioEngine.muted = false;
         audioEngine.volume = Number(byId("auth-volume")?.value ?? 0.55);
-      }
-      await audioEngine.play();
-      if (options.authAutoplay) {
-        authPreviewWaitingForGesture = true;
-        setAuthStatus("Preview ready — tap once anywhere to turn sound on.");
+        try {
+          await audioEngine.play();
+          authPreviewWaitingForGesture = false;
+          setAuthStatus("");
+        } catch {
+          audioEngine.muted = true;
+          await audioEngine.play();
+          authPreviewWaitingForGesture = true;
+          setAuthStatus("Preview ready — tap once anywhere to turn sound on.");
+        }
       } else if (options.fadeIn) {
         fadeInAuthPreview();
       }
@@ -2763,6 +2807,21 @@ function openTrackDialog(track = null) {
 }
 
 document.addEventListener("click", async (event) => {
+  const discoveryMetric = event.target.closest("[data-song-lab-discover]");
+  if (discoveryMetric) {
+    await discoverSongLab(discoveryMetric.dataset.songLabDiscover);
+    return;
+  }
+  const discoveryAdd = event.target.closest("[data-song-lab-add]");
+  if (discoveryAdd) {
+    await addSongLabTrack(discoveryAdd.dataset.songLabAdd);
+    return;
+  }
+  const discoveryMore = event.target.closest("[data-song-lab-more]");
+  if (discoveryMore) {
+    await discoverSongLab(discoveryMore.dataset.songLabMore, Number(discoveryMore.dataset.songLabOffset) || 0);
+    return;
+  }
     const libraryViewButton = event.target.closest("[data-library-view]");
 
   if (libraryViewButton?.dataset.libraryView === "home") {
@@ -2931,16 +2990,6 @@ document.addEventListener("click", async (event) => {
     broadcastQueue();
     showToast("Queue cleared.");
   }
-  if (action === "smart-queue") buildSmartQueue();
-  if (action === "remove-selected-queue") {
-    if (roomState.roomId && !roomState.isHost) return showToast("Only the host can change the shared queue.", true);
-    const selected = new Set([...document.querySelectorAll("[data-queue-select]:checked")].map((input) => Number(input.dataset.queueSelect)));
-    state.queue = state.queue.filter((_, index) => !selected.has(index));
-    localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
-    renderQueue();
-    broadcastQueue();
-    showToast(selected.size ? `${selected.size} songs removed from queue.` : "Select songs to remove first.");
-  }
   if (action === "select-visible-tracks") {
     const visible = filteredTracks();
     const shouldSelect = visible.length > 0 && !visible.every((track) => state.selectedTrackIds.has(track.id));
@@ -3059,185 +3108,6 @@ byId("song-lab-button").addEventListener("click", () => {
   byId("song-lab-query").focus();
 });
 
-function openDirectorDialog() {
-  const tracks = state.activePlaylist?.tracks || [];
-  if (!tracks.length) return showToast("Open a playlist with tracks first.", true);
-  byId("director-seed").innerHTML = tracks.map((track) =>
-    `<option value="${track.id}">${escapeHtml(track.title)} — ${escapeHtml(track.artist)}</option>`
-  ).join("");
-  byId("director-result").hidden = true;
-  byId("director-mode").value = "simple";
-  byId("director-musician-controls").hidden = true;
-  byId("director-track-count").value = "10";
-  byId("director-bpm").value = "";
-  byId("director-bpm-tolerance").value = "8";
-  byId("director-mood").value = "";
-  byId("director-language").value = "";
-  byId("director-status").hidden = true;
-  byId("director-status").textContent = "";
-  updateDirectorSeedDetails();
-  byId("director-dialog").showModal();
-}
-
-async function updateDirectorSeedDetails() {
-  const track = (state.activePlaylist?.tracks || []).find((item) => item.id === Number(byId("director-seed").value));
-  const details = byId("director-seed-details");
-  if (!track) return;
-  if (!track.features && track.audio_url && track.id > 0) {
-    details.textContent = "Analyzing this track’s BPM and key…";
-    try {
-      const analyzed = await api(`/api/tracks/${track.id}/analyze-features`, { method: "POST" });
-      track.features = analyzed.features;
-    } catch {
-      // Older or unavailable files remain usable with reduced scoring confidence.
-    }
-  }
-  const features = track.features || {};
-  const bpm = features.bpm ? `${Math.round(features.bpm)} BPM` : "BPM unknown";
-  const key = features.musical_key || "key unknown";
-  const genre = track.genre || "uncategorized";
-  details.textContent = `${bpm} · ${key} · ${genre}`;
-  const mood = byId("director-mood");
-  if (!mood.value.trim()) {
-    const energy = Number(features.energy);
-    const energyLabel = Number.isFinite(energy) && energy >= 0.72
-      ? "energetic"
-      : Number.isFinite(energy) && energy <= 0.35
-        ? "calm"
-        : "similar";
-    mood.value = genre === "uncategorized" ? `${energyLabel} mood` : `${genre} ${energyLabel} mood`;
-  }
-  if (features.language && !byId("director-language").value.trim()) {
-    byId("director-language").value = features.language;
-  }
-}
-
-async function generateDirectorMix() {
-  const seedTrackId = Number(byId("director-seed").value);
-  const requestedTrackCount = Math.min(50, Math.max(1, Number(byId("director-track-count").value) || 10));
-  const submit = byId("director-submit");
-  const resultBox = byId("director-result");
-  submit.disabled = true;
-  submit.textContent = "Building…";
-  resultBox.hidden = false;
-  resultBox.innerHTML = "<p>Scoring transitions and building your flow…</p>";
-  try {
-    const body = {
-      seed_track_id: seedTrackId,
-      seed_playlist_id: state.activeId || null,
-      target_track_count: requestedTrackCount,
-      target_bpm: byId("director-mode").value === "musician" ? (Number(byId("director-bpm").value) || null) : null,
-      bpm_tolerance: byId("director-mode").value === "musician" ? Number(byId("director-bpm-tolerance").value) : 20,
-      max_tracks: 50,
-    };
-    const mix = await api("/api/director/generate", { method: "POST", body: JSON.stringify(body) });
-    state.directorSessionId = mix.session_id || null;
-    const tracks = mix.items || [];
-    const songLabel = tracks.length === 1 ? "song" : "songs";
-    const durationMinutes = Math.round((mix.actual_duration_seconds || 0) / 60);
-    const durationLabel = durationMinutes === 0 ? "under 1 minute" : `about ${durationMinutes} minutes`;
-    const shortfallMessage = tracks.length < requestedTrackCount
-      ? `<p class="director-warnings">Only ${tracks.length} ${songLabel} matched the current BPM, key, language, and library filters. Try adding more songs or use online discoveries.</p>`
-      : "";
-    const qualityWarnings = mix.quality?.warnings || [];
-    resultBox.innerHTML = `
-      <p><strong>${tracks.length} ${songLabel} · ${durationLabel}</strong></p>
-      ${shortfallMessage}
-      ${qualityWarnings.length ? `<div class="director-warnings">${qualityWarnings.map((warning) => `<p>⚠ ${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
-      <ol>${tracks.map((item) => `<li><strong>${escapeHtml(item.track.title)}</strong> — ${escapeHtml(item.track.artist)}${item.transition ? `<small> · ${escapeHtml(item.transition.transition || "Transition")}</small>` : ""}</li>`).join("")}</ol>
-      <div class="dialog-actions">
-        <button class="button button-quiet" type="button" id="director-discover">Find 15 online discoveries</button>
-        <button class="button button-quiet" type="button" id="director-copy">Copy mix details</button>
-        <button class="button button-accent" type="button" id="director-save">Save as playlist</button>
-      </div>`;
-    byId("director-copy").addEventListener("click", async () => {
-      const lines = tracks.map((item, index) => `${index + 1}. ${item.track.title} — ${item.track.artist}`);
-      try {
-        await navigator.clipboard.writeText(`${tracks.length} ${songLabel} · ${durationLabel}\n${lines.join("\n")}`);
-        showToast("Mix details copied.");
-      } catch (error) {
-        showToast("Could not copy mix details.", true);
-      }
-    });
-    byId("director-save").addEventListener("click", async () => {
-      const name = window.prompt("Name this mix", "Director Mix");
-      if (!name) return;
-      try {
-        await api("/api/director/save", { method: "POST", body: JSON.stringify({ name, description: "Generated by AI Music Director.", track_ids: tracks.map((item) => item.track.id) }) });
-        showToast("Director mix saved as a playlist.");
-        byId("director-dialog").close();
-        await loadPlaylists(state.activeId);
-      } catch (error) {
-        showToast(error.message || "Could not save the Director mix.", true);
-      }
-    });
-    byId("director-discover").addEventListener("click", async () => {
-      const discoveryButton = byId("director-discover");
-      const status = byId("director-status");
-      discoveryButton.disabled = true;
-      status.hidden = false;
-      status.textContent = "Searching online for matching songs…";
-      try {
-        await new Promise((resolve) => setTimeout(resolve, 250));
-        status.textContent = "Checking web BPM and key data; analyzing short previews if needed; then finding YouTube matches…";
-        const discovery = await api("/api/director/discover", { method: "POST", body: JSON.stringify({ seed_track_id: seedTrackId, mood: byId("director-mood").value.trim() || null, language: byId("director-language").value.trim() || null, count: 15 }) });
-        if (!discovery.tracks?.length) throw new Error("No songs with verifiable matching BPM and key were found this time. Try another seed or search again later.");
-        status.textContent = `${discovery.tracks.length} new songs found. Nothing has been added yet.`;
-        const discoveryItems = discovery.tracks;
-        resultBox.insertAdjacentHTML("beforeend", `
-          <section class="director-discoveries">
-            <h3>New discoveries</h3>
-            <p>These songs are not in your existing playlists.</p>
-            <ol>${discoveryItems.map((item) => `<li><strong>${escapeHtml(item.title)}</strong> — ${escapeHtml(item.artist)}<small> · ${item.bpm ? `${Math.round(item.bpm)} BPM` : "BPM unverified"}${item.key ? ` · ${escapeHtml(item.key)}` : " · key unverified"}${item.language ? ` · ${escapeHtml(item.language)}` : " · language unverified"}</small></li>`).join("")}</ol>
-            <button class="button button-accent" type="button" id="director-create-discovery-playlist">Create playlist from these songs</button>
-          </section>`);
-        byId("director-create-discovery-playlist").addEventListener("click", async () => {
-          const createButton = byId("director-create-discovery-playlist");
-          createButton.disabled = true;
-          status.textContent = "Downloading and analyzing your selected discoveries…";
-          const name = window.prompt("Name this discovery playlist", "Director Discoveries");
-          if (!name) {
-            createButton.disabled = false;
-            status.textContent = "Songs are still only shown as suggestions.";
-            return;
-          }
-          try {
-            const created = await api("/api/director/discover/create-playlist", {
-              method: "POST",
-              body: JSON.stringify({ seed_track_id: seedTrackId, name, items: discoveryItems.map((item) => ({ url: item.url, title: item.title, artist: item.artist })) }),
-            });
-            await loadPlaylists(created.id);
-            showToast(`${created.tracks?.length || discoveryItems.length} discoveries saved as a playlist.`);
-            status.textContent = "Playlist created.";
-          } catch (error) {
-            status.textContent = error.message || "Could not create the discovery playlist.";
-            createButton.disabled = false;
-          }
-        });
-      } catch (error) {
-        status.textContent = error.message || "Online discovery failed.";
-        showToast(status.textContent, true);
-      } finally {
-        discoveryButton.disabled = false;
-      }
-    });
-  } catch (error) {
-    resultBox.innerHTML = `<p class="song-lab-error">${escapeHtml(error.message || "Director failed.")}</p>`;
-  } finally {
-    submit.disabled = false;
-    submit.textContent = "Generate mix";
-  }
-}
-
-byId("director-button").addEventListener("click", openDirectorDialog);
-byId("director-mode").addEventListener("change", () => {
-  byId("director-musician-controls").hidden = byId("director-mode").value !== "musician";
-});
-byId("director-seed").addEventListener("change", updateDirectorSeedDetails);
-byId("director-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  await generateDirectorMix();
-});
 byId("song-lab-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   await analyzeSongFromLab();
@@ -3551,7 +3421,6 @@ audioEngine.addEventListener("pause", () => {
 });
 
 audioEngine.addEventListener("ended", () => {
-  directorFeedback("complete", playerTrack);
   stopLyricsClock();
   playNextTrack();
 });
@@ -3576,6 +3445,19 @@ function applyEqualizer(values) {
     input.value = String(equalizerFilters[index]?.gain.value ?? 0);
   });
 
+  // Keep the alternate graphic view as a visual representation of the same
+  // EQ state. The closest graphic band inherits each 10-band value.
+  if (graphicEqSettings.length) {
+    EQ_FREQUENCIES.forEach((frequency, index) => {
+      const target = graphicEqSettings.reduce((best, band, bandIndex) => Math.abs(Math.log(band.frequency / frequency)) < Math.abs(Math.log(graphicEqSettings[best].frequency / frequency)) ? bandIndex : best, 0);
+      graphicEqSettings[target].gain = Number(values[index] ?? 0);
+    });
+    graphicEqSettings.forEach((_, index) => updateGraphicEqFilter(index));
+    persistGraphicEq();
+    syncGraphicEqInspector();
+    drawGraphicEqualizer(graphicEqSelectedIndex);
+  }
+
   localStorage.setItem(EQ_STORAGE_KEY, JSON.stringify(equalizerValues()));
 }
 
@@ -3597,6 +3479,18 @@ function setEqualizerPreset(name) {
 
 function graphicEqualizerValues() {
   return graphicEqSettings.map((band) => band.gain);
+}
+
+function syncGraphicToTenBand() {
+  if (!equalizerFilters.length || !graphicEqSettings.length) return;
+  EQ_FREQUENCIES.forEach((frequency, index) => {
+    const nearest = graphicEqSettings.reduce((best, band, bandIndex) => Math.abs(Math.log(band.frequency / frequency)) < Math.abs(Math.log(graphicEqSettings[best].frequency / frequency)) ? bandIndex : best, 0);
+    const mappedValue = Math.round(Math.max(-12, Math.min(12, Number(graphicEqSettings[nearest].gain || 0))));
+    equalizerFilters[index].gain.value = mappedValue;
+    const input = document.querySelector(`[data-eq-band="${index}"]`);
+    if (input) input.value = String(mappedValue);
+  });
+  localStorage.setItem(EQ_STORAGE_KEY, JSON.stringify(equalizerValues()));
 }
 
 function updateGraphicEqFilter(index) {
@@ -3624,7 +3518,7 @@ function persistGraphicEq() {
 function normalizeGraphicEqBand(value, index) {
   const defaults = GRAPHIC_EQ_DEFAULTS[index];
   const candidate = value && typeof value === "object" ? value : {};
-  const types = new Set(["highpass", "lowshelf", "peaking", "notch", "highshelf", "lowpass"]);
+  const types = new Set(["highpass", "lowshelf", "peaking", "bandpass", "notch", "highshelf", "lowpass"]);
   const frequency = Number(candidate.frequency);
   const gain = Number(candidate.gain);
   const q = Number(candidate.q);
@@ -3654,7 +3548,28 @@ function syncGraphicEqInspector() {
   const bypass = byId("graphic-eq-bypass");
   bypass.textContent = graphicEqBypassed ? "Bypassed" : "Bypass";
   bypass.setAttribute("aria-pressed", String(graphicEqBypassed));
+  const hq = byId("graphic-eq-hq");
+  const monitor = byId("graphic-eq-monitor");
+  const compare = byId("graphic-eq-compare");
+  if (hq) hq.setAttribute("aria-pressed", String(graphicEqHQ));
+  if (monitor) monitor.setAttribute("aria-pressed", String(graphicEqMonitor));
+  if (compare) compare.setAttribute("aria-pressed", String(graphicEqCompare));
   document.querySelectorAll("[data-geq-select]").forEach((button) => button.classList.toggle("is-selected", Number(button.dataset.geqSelect) === graphicEqSelectedIndex));
+  document.querySelectorAll("[data-geq-fader]").forEach((slider) => {
+    const band = graphicEqSettings[Number(slider.dataset.geqFader)];
+    if (band) slider.value = String(band.gain);
+  });
+  document.querySelectorAll('.graphic-eq-knob-row').forEach((row) => {
+    const property = row.querySelector('[data-geq-knob]')?.dataset.geqKnob;
+    row.querySelectorAll('.graphic-eq-knob').forEach((knob, index) => {
+      const band = graphicEqSettings[index];
+      if (band && property) {
+        knob.value = property === 'frequency' ? String(graphicEqFrequencyToSlider(band.frequency)) : String(band.q);
+        const ratio = (Number(knob.value) - Number(knob.min)) / (Number(knob.max) - Number(knob.min));
+        knob.style.setProperty('--knob-angle', `${-135 + Math.max(0, Math.min(1, ratio)) * 270}deg`);
+      }
+    });
+  });
 }
 
 function drawGraphicEqualizer(selectedIndex = -1) {
@@ -3675,30 +3590,96 @@ function drawGraphicEqualizer(selectedIndex = -1) {
   const yFor = (gain) => pad.top + ((18 - gain) / 36) * plotH;
   ctx.clearRect(0, 0, width, height);
   const bg = ctx.createLinearGradient(0, 0, 0, height);
-  bg.addColorStop(0, "rgba(15, 29, 39, .98)"); bg.addColorStop(1, "rgba(26, 43, 51, .94)");
+  bg.addColorStop(0, "#151a1c"); bg.addColorStop(1, "#0c1011");
   ctx.fillStyle = bg; ctx.fillRect(0, 0, width, height);
-  ctx.strokeStyle = "rgba(122, 180, 198, .12)"; ctx.lineWidth = 1;
+  ctx.strokeStyle = "rgba(174, 188, 191, .16)"; ctx.lineWidth = 1;
   [18, 12, 6, 0, -6, -12, -18].forEach((gain) => { const y = yFor(gain); ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(width - pad.right, y); ctx.stroke(); });
   [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000].forEach((frequency) => { const x = xFor(frequency); ctx.beginPath(); ctx.moveTo(x, pad.top); ctx.lineTo(x, height - pad.bottom); ctx.stroke(); });
-  if (audioAnalyserActive && frequencyData?.length) {
-    ctx.beginPath();
-    for (let index = 0; index < frequencyData.length; index += 1) {
-      const frequency = (index / frequencyData.length) * (audioContext?.sampleRate || 44100) / 2;
-      if (frequency < 20 || frequency > 20000) continue;
-      const x = xFor(frequency); const y = pad.top + ((255 - frequencyData[index]) / 255) * plotH * .82;
-      index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  if (graphicEqMonitor && audioAnalyserActive && frequencyData?.length) {
+    const spectrumPoints = [];
+    const sampleRate = audioContext?.sampleRate || 44100;
+    const nyquist = sampleRate / 2;
+    const binFor = (frequency) => Math.max(1, Math.min(frequencyData.length - 1, Math.round(frequency / nyquist * frequencyData.length)));
+    for (let index = 0; index < graphicEqSpectrumEnvelope.length; index += 1) {
+      const frequency = 20 * (10 ** (index / (graphicEqSpectrumEnvelope.length - 1) * 3));
+      const start = binFor(frequency / 1.045);
+      const end = Math.max(start, binFor(frequency * 1.045));
+      let peak = 0;
+      for (let bin = start; bin <= end; bin += 1) peak = Math.max(peak, frequencyData[bin] || 0);
+      const normalized = Math.max(0, Math.min(1, peak / 255));
+      const target = Math.pow(normalized, .78);
+      const previous = graphicEqSpectrumEnvelope[index] || target;
+      graphicEqSpectrumEnvelope[index] = previous + (target - previous) * (target > previous ? .48 : .18);
+      const x = xFor(frequency);
+      const y = pad.top + (1 - graphicEqSpectrumEnvelope[index]) * plotH * .76 + plotH * .09;
+      spectrumPoints.push({ x, y });
     }
-    ctx.strokeStyle = "rgba(126, 197, 210, .35)"; ctx.lineWidth = 1.2; ctx.shadowBlur = 0; ctx.stroke();
+    // Reduce blocky FFT-bin steps without washing out the musical peaks.
+    const smoothedSpectrum = spectrumPoints.map((point, index) => {
+      const previous = spectrumPoints[Math.max(0, index - 2)].y;
+      const nearPrevious = spectrumPoints[Math.max(0, index - 1)].y;
+      const nearNext = spectrumPoints[Math.min(spectrumPoints.length - 1, index + 1)].y;
+      const next = spectrumPoints[Math.min(spectrumPoints.length - 1, index + 2)].y;
+      return { x: point.x, y: point.y * .42 + nearPrevious * .2 + nearNext * .2 + previous * .09 + next * .09 };
+    });
+    const spectrumBase = height - pad.bottom;
+    const spectrumFill = ctx.createLinearGradient(0, pad.top, 0, spectrumBase);
+    spectrumFill.addColorStop(0, "rgba(190, 211, 224, .34)");
+    spectrumFill.addColorStop(.58, "rgba(145, 172, 190, .22)");
+    spectrumFill.addColorStop(1, "rgba(90, 115, 132, .16)");
+    ctx.beginPath();
+    ctx.moveTo(smoothedSpectrum[0].x, spectrumBase);
+    smoothedSpectrum.forEach((point) => ctx.lineTo(point.x, point.y));
+    ctx.lineTo(smoothedSpectrum.at(-1).x, spectrumBase);
+    ctx.closePath();
+    ctx.fillStyle = spectrumFill;
+    ctx.fill();
+    ctx.beginPath();
+    smoothedSpectrum.forEach((point, index) => {
+      if (!index) { ctx.moveTo(point.x, point.y); return; }
+      const previous = smoothedSpectrum[index - 1];
+      const midX = (previous.x + point.x) / 2;
+      const midY = (previous.y + point.y) / 2;
+      ctx.quadraticCurveTo(previous.x, previous.y, midX, midY);
+      if (index === smoothedSpectrum.length - 1) ctx.quadraticCurveTo(midX, midY, point.x, point.y);
+    });
+    ctx.strokeStyle = "rgba(207, 224, 233, .62)";
+    ctx.lineWidth = 1.35;
+    ctx.shadowBlur = 2;
+    ctx.shadowColor = "rgba(178, 208, 224, .35)";
+    ctx.stroke();
+    ctx.shadowBlur = 0;
   }
   const points = graphicEqSettings
     .map((band, index) => ({ index, frequency: band.frequency, x: xFor(band.frequency), y: yFor(band.enabled && !graphicEqBypassed ? band.gain : 0), gain: band.enabled && !graphicEqBypassed ? band.gain : 0, enabled: band.enabled }))
     .sort((left, right) => left.frequency - right.frequency);
   if (points.length) {
-    const curvePoints = [{ x: xFor(20), y: yFor(0), gain: 0 }, ...points, { x: xFor(20000), y: yFor(0), gain: 0 }];
-    const fill = ctx.createLinearGradient(0, 0, 0, height); fill.addColorStop(0, "rgba(111, 230, 189, .24)"); fill.addColorStop(1, "rgba(111, 230, 189, 0)");
+    // FL's graph is the response of each filter, not a polyline through the
+    // handles. Approximate each bell with a log-frequency response and add
+    // the bands together so moving a point changes the whole shape smoothly.
+    const responseAt = (frequency) => graphicEqSettings.reduce((sum, band) => {
+      if (!band.enabled || graphicEqBypassed) return sum;
+      const octaveDistance = Math.log2(Math.max(20, frequency) / Math.max(20, band.frequency));
+      const width = Math.max(.045, 1.65 / Math.max(.1, band.q));
+      let contribution = band.gain * Math.exp(-((octaveDistance / width) ** 2) * 1.35);
+      if (band.type === "lowshelf") contribution = band.gain / (1 + Math.exp(octaveDistance * 7 / Math.max(.35, band.q)));
+      if (band.type === "highshelf") contribution = band.gain / (1 + Math.exp(-octaveDistance * 7 / Math.max(.35, band.q)));
+      if (band.type === "bandpass") contribution = band.gain * Math.exp(-((octaveDistance / width) ** 2) * 2.4);
+      if (band.type === "notch") contribution = -Math.abs(band.gain || 12) * Math.exp(-((octaveDistance / width) ** 2) * 2.4);
+      if (band.type === "lowpass") contribution = octaveDistance > 0 ? -Math.min(18, Math.abs(band.gain || 12) * Math.min(1, octaveDistance)) : 0;
+      if (band.type === "highpass") contribution = octaveDistance < 0 ? -Math.min(18, Math.abs(band.gain || 12) * Math.min(1, -octaveDistance)) : 0;
+      return sum + contribution;
+    }, 0);
+    const curvePoints = Array.from({ length: 280 }, (_, index) => {
+      const frequency = 20 * (10 ** (index / 279 * 3));
+      const gain = Math.max(-18, Math.min(18, responseAt(frequency)));
+      return { x: xFor(frequency), y: yFor(gain), gain };
+    });
+    const fill = ctx.createLinearGradient(0, 0, 0, height); fill.addColorStop(0, "rgba(226, 165, 49, .22)"); fill.addColorStop(1, "rgba(226, 165, 49, 0)");
     ctx.beginPath(); ctx.moveTo(curvePoints[0].x, height - pad.bottom); curvePoints.forEach((point) => ctx.lineTo(point.x, point.y)); ctx.lineTo(curvePoints.at(-1).x, height - pad.bottom); ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
-    ctx.beginPath(); curvePoints.forEach((point, index) => { if (!index) return ctx.moveTo(point.x, point.y); const previous = curvePoints[index - 1]; const midX = (previous.x + point.x) / 2; ctx.quadraticCurveTo(previous.x, previous.y, midX, (previous.y + point.y) / 2); ctx.quadraticCurveTo(midX, (previous.y + point.y) / 2, point.x, point.y); }); ctx.strokeStyle = graphicEqBypassed ? "rgba(180, 205, 201, .45)" : "#7ce5bd"; ctx.lineWidth = 2.5; ctx.shadowColor = "rgba(124,229,189,.6)"; ctx.shadowBlur = graphicEqBypassed ? 0 : 10; ctx.stroke(); ctx.shadowBlur = 0;
-    points.forEach((point) => { const selected = point.index === selectedIndex; ctx.beginPath(); ctx.arc(point.x, point.y, selected ? 10 : 8, 0, Math.PI * 2); ctx.fillStyle = !point.enabled ? "#17262b" : selected ? "#eaffd9" : "#263e46"; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = !point.enabled ? "#526568" : selected ? "#7ce5bd" : "#8fb4b5"; ctx.stroke(); ctx.fillStyle = selected ? "#173b35" : "#d9f5e9"; ctx.font = "700 10px Inter, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(String(point.index + 1), point.x, point.y); });
+    ctx.beginPath(); curvePoints.forEach((point, index) => { if (!index) ctx.moveTo(point.x, point.y); else ctx.lineTo(point.x, point.y); }); ctx.strokeStyle = graphicEqBypassed ? "rgba(180, 190, 190, .45)" : "#c6dafa"; ctx.lineWidth = 2.35; ctx.shadowColor = "rgba(183,211,241,.48)"; ctx.shadowBlur = graphicEqBypassed ? 0 : 7; ctx.stroke(); ctx.shadowBlur = 0;
+    const bandColors = ["#b76bd4", "#e888b4", "#dd8b71", "#d7c75a", "#73c56e", "#63c7b0", "#67a9e7"];
+    points.forEach((point) => { const selected = point.index === selectedIndex; const actualGain = point.enabled && !graphicEqBypassed ? point.gain : 0; const nodeY = yFor(actualGain); const color = bandColors[point.index % bandColors.length]; ctx.beginPath(); ctx.arc(point.x, nodeY, selected ? 10 : 8, 0, Math.PI * 2); ctx.fillStyle = !point.enabled ? "#273033" : color; ctx.fill(); ctx.lineWidth = selected ? 2 : 1; ctx.strokeStyle = !point.enabled ? "#657174" : selected ? "#ffffff" : "rgba(255,255,255,.58)"; ctx.stroke(); ctx.fillStyle = "#172018"; ctx.font = "700 9px Inter, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(String(point.index + 1), point.x, nodeY); if (selected) { ctx.font = "600 10px ui-monospace, monospace"; ctx.fillStyle = "#d8f6ff"; ctx.fillText(`${Math.round(point.frequency)} Hz`, point.x, nodeY - 17); } });
   }
 }
 
@@ -3715,6 +3696,7 @@ function startGraphicEqAnimation() {
 function applyGraphicEqualizer(values, selectedIndex = -1) {
   if (!graphicEqSettings.length) graphicEqSettings = GRAPHIC_EQ_DEFAULTS.map((band) => ({ ...band }));
   graphicEqSettings.forEach((band, index) => { band.gain = Math.max(-18, Math.min(18, Number(values[index] ?? 0))); updateGraphicEqFilter(index); });
+  syncGraphicToTenBand();
   persistGraphicEq();
   if (selectedIndex >= 0) { graphicEqSelectedIndex = selectedIndex; syncGraphicEqInspector(); }
   const readout = byId("graphic-eq-readout");
@@ -3775,6 +3757,13 @@ function setGraphicEqOpen(open) {
 byId("graphic-eq-close").addEventListener("click", () => setGraphicEqOpen(false));
 byId("graphic-eq-mode-toggle").addEventListener("click", () => setGraphicEqOpen(true));
 byId("eq-mode-10").addEventListener("click", () => setGraphicEqOpen(false));
+// Keep the mode buttons reliable even when the EQ panel is reparented or
+// animated by the player shell.
+document.addEventListener("click", (event) => {
+  if (event.target.closest("#graphic-eq-close")) setGraphicEqOpen(false);
+  if (event.target.closest("#graphic-eq-mode-toggle")) setGraphicEqOpen(true);
+  if (event.target.closest("#eq-mode-10")) setGraphicEqOpen(false);
+});
 byId("graphic-eq-reset").addEventListener("click", () => setGraphicEqualizerPreset("flat"));
 byId("graphic-eq-bypass").addEventListener("click", () => {
   graphicEqBypassed = !graphicEqBypassed;
@@ -3782,24 +3771,96 @@ byId("graphic-eq-bypass").addEventListener("click", () => {
   syncGraphicEqInspector();
   drawGraphicEqualizer(graphicEqSelectedIndex);
 });
+byId("graphic-eq-hq").addEventListener("click", () => {
+  graphicEqHQ = !graphicEqHQ;
+  if (analyser) analyser.fftSize = graphicEqHQ ? 4096 : 2048;
+  syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqSelectedIndex);
+});
+byId("graphic-eq-monitor").addEventListener("click", () => {
+  graphicEqMonitor = !graphicEqMonitor;
+  syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqSelectedIndex);
+});
+byId("graphic-eq-compare").addEventListener("click", () => {
+  graphicEqCompare = !graphicEqCompare;
+  if (graphicEqCompare) {
+    graphicEqCompareSettings = graphicEqSettings.map((band) => ({ ...band }));
+    graphicEqSettings.forEach((_, index) => { if (graphicEqualizerFilters[index]) graphicEqualizerFilters[index].gain.value = 0; });
+  } else if (graphicEqCompareSettings) {
+    graphicEqSettings = graphicEqCompareSettings.map((band) => ({ ...band }));
+    graphicEqSettings.forEach((_, index) => updateGraphicEqFilter(index));
+  }
+  syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqSelectedIndex);
+});
 document.querySelectorAll("[data-geq-select]").forEach((button) => button.addEventListener("click", () => {
   graphicEqSelectedIndex = Number(button.dataset.geqSelect);
   syncGraphicEqInspector();
   drawGraphicEqualizer(graphicEqSelectedIndex);
 }));
-byId("graphic-eq-type").addEventListener("input", (event) => { graphicEqSettings[graphicEqSelectedIndex].type = event.target.value; updateGraphicEqFilter(graphicEqSelectedIndex); persistGraphicEq(); drawGraphicEqualizer(graphicEqSelectedIndex); });
-byId("graphic-eq-frequency").addEventListener("input", (event) => { graphicEqSettings[graphicEqSelectedIndex].frequency = Math.round(graphicEqSliderToFrequency(event.target.value)); updateGraphicEqFilter(graphicEqSelectedIndex); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqSelectedIndex); });
-byId("graphic-eq-gain").addEventListener("input", (event) => { graphicEqSettings[graphicEqSelectedIndex].gain = Number(event.target.value); updateGraphicEqFilter(graphicEqSelectedIndex); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqSelectedIndex); });
-byId("graphic-eq-q").addEventListener("input", (event) => { graphicEqSettings[graphicEqSelectedIndex].q = Number(event.target.value); updateGraphicEqFilter(graphicEqSelectedIndex); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqSelectedIndex); });
+document.querySelectorAll("[data-geq-fader]").forEach((slider) => slider.addEventListener("input", (event) => {
+  const index = Number(event.currentTarget.dataset.geqFader);
+  if (!graphicEqSettings[index]) return;
+  graphicEqSelectedIndex = index;
+  graphicEqSettings[index].gain = Number(event.currentTarget.value);
+  updateGraphicEqFilter(index); syncGraphicToTenBand(); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(index);
+}));
+document.querySelectorAll(".graphic-eq-knob-row").forEach((row) => {
+  const property = row.querySelector("[data-geq-knob]")?.dataset.geqKnob;
+  row.querySelectorAll(".graphic-eq-knob").forEach((knob, index) => {
+    knob.addEventListener("input", (event) => {
+      const band = graphicEqSettings[index];
+      if (!band || !property) return;
+      graphicEqSelectedIndex = index;
+      if (property === "frequency") band.frequency = Math.round(graphicEqSliderToFrequency(event.currentTarget.value));
+      if (property === "q") band.q = Number(event.currentTarget.value);
+      updateGraphicEqFilter(index); syncGraphicToTenBand(); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(index);
+    });
+    let dragStartY = 0;
+    let dragStartValue = 0;
+    knob.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      knob.setPointerCapture(event.pointerId);
+      dragStartY = event.clientY;
+      dragStartValue = Number(knob.value);
+    });
+    knob.addEventListener("pointermove", (event) => {
+      if (!knob.hasPointerCapture(event.pointerId)) return;
+      const min = Number(knob.min);
+      const max = Number(knob.max);
+      const sensitivity = (max - min) / 180;
+      const value = Math.max(min, Math.min(max, dragStartValue + (dragStartY - event.clientY) * sensitivity));
+      knob.value = String(value);
+      knob.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  });
+});
+byId("graphic-eq-type").addEventListener("input", (event) => { graphicEqSettings[graphicEqSelectedIndex].type = event.target.value; updateGraphicEqFilter(graphicEqSelectedIndex); syncGraphicToTenBand(); persistGraphicEq(); drawGraphicEqualizer(graphicEqSelectedIndex); });
+byId("graphic-eq-frequency").addEventListener("input", (event) => { graphicEqSettings[graphicEqSelectedIndex].frequency = Math.round(graphicEqSliderToFrequency(event.target.value)); updateGraphicEqFilter(graphicEqSelectedIndex); syncGraphicToTenBand(); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqSelectedIndex); });
+byId("graphic-eq-gain").addEventListener("input", (event) => { graphicEqSettings[graphicEqSelectedIndex].gain = Number(event.target.value); updateGraphicEqFilter(graphicEqSelectedIndex); syncGraphicToTenBand(); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqSelectedIndex); });
+byId("graphic-eq-q").addEventListener("input", (event) => { graphicEqSettings[graphicEqSelectedIndex].q = Number(event.target.value); updateGraphicEqFilter(graphicEqSelectedIndex); syncGraphicToTenBand(); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqSelectedIndex); });
 byId("graphic-eq-band-toggle").addEventListener("click", () => { const band = graphicEqSettings[graphicEqSelectedIndex]; band.enabled = !band.enabled; updateGraphicEqFilter(graphicEqSelectedIndex); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqSelectedIndex); });
 document.querySelectorAll("[data-geq-preset]").forEach((button) => button.addEventListener("click", () => setGraphicEqualizerPreset(button.dataset.geqPreset)));
 byId("graphic-eq-graph").addEventListener("pointerdown", (event) => {
   const point = graphicEqPointer(event); graphicEqDragIndex = point.index; graphicEqSelectedIndex = point.index; event.currentTarget.setPointerCapture(event.pointerId);
-  graphicEqSettings[point.index].frequency = Math.round(point.frequency); graphicEqSettings[point.index].gain = point.gain; updateGraphicEqFilter(point.index); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(point.index);
+  graphicEqSettings[point.index].frequency = Math.round(point.frequency); graphicEqSettings[point.index].gain = point.gain; updateGraphicEqFilter(point.index); syncGraphicToTenBand(); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(point.index);
 });
 byId("graphic-eq-graph").addEventListener("pointermove", (event) => {
   if (graphicEqDragIndex < 0) return;
-  const point = graphicEqPointer(event); const band = graphicEqSettings[graphicEqDragIndex]; band.frequency = Math.round(point.frequency); band.gain = point.gain; updateGraphicEqFilter(graphicEqDragIndex); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqDragIndex);
+  const point = graphicEqPointer(event); const band = graphicEqSettings[graphicEqDragIndex]; band.frequency = Math.round(point.frequency); band.gain = point.gain; updateGraphicEqFilter(graphicEqDragIndex); syncGraphicToTenBand(); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqDragIndex);
+});
+byId("graphic-eq-graph").addEventListener("wheel", (event) => {
+  event.preventDefault();
+  const point = graphicEqPointer(event);
+  const band = graphicEqSettings[graphicEqSelectedIndex];
+  if (!band) return;
+  band.q = Math.max(.1, Math.min(18, band.q * (event.deltaY < 0 ? 1.08 : .92)));
+  updateGraphicEqFilter(graphicEqSelectedIndex); persistGraphicEq(); syncGraphicEqInspector(); drawGraphicEqualizer(graphicEqSelectedIndex);
+}, { passive: false });
+byId("graphic-eq-graph").addEventListener("dblclick", (event) => {
+  const point = graphicEqPointer(event);
+  const band = graphicEqSettings[point.index];
+  if (!band) return;
+  band.gain = 0; band.q = 1.05; band.enabled = true;
+  updateGraphicEqFilter(point.index); persistGraphicEq(); graphicEqSelectedIndex = point.index; syncGraphicEqInspector(); drawGraphicEqualizer(point.index);
 });
 byId("graphic-eq-graph").addEventListener("pointerup", () => { graphicEqDragIndex = -1; });
 byId("graphic-eq-graph").addEventListener("pointercancel", () => { graphicEqDragIndex = -1; });
@@ -3968,20 +4029,15 @@ byId("lyrics-fetch").addEventListener("click", async () => {
   fetchButton.textContent = "Searching…";
   try {
     const result = await api(`/api/tracks/${playerTrack.id}/lyrics`);
-    const updatedTrack = await api(`/api/tracks/${playerTrack.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ lyrics: result.lyrics }),
+    (result.links || []).forEach((link, index) => {
+      if (index === 0) window.open(link.url, "_blank", "noopener,noreferrer");
     });
-    playerTrack = updatedTrack;
-    renderLyrics();
-    updateNowPlayingDisplay();
-    await loadPlaylists(state.activeId);
-    showToast(`Lyrics found${result.source ? ` via ${result.source}` : ""} and saved.`);
+    showToast(result.message || "Licensed lyric search opened. Paste authorized lyrics with Edit.");
   } catch (error) {
     showToast(error.message, true);
   } finally {
     fetchButton.disabled = false;
-    fetchButton.textContent = "Find lyrics";
+    fetchButton.textContent = "Find licensed lyrics";
   }
 });
 
@@ -4097,7 +4153,6 @@ byId("now-playing-like").addEventListener("click", async () => {
   if (!playerTrack) return;
 
   try {
-    directorFeedback("like", playerTrack);
     const updatedTrack = await api(`/api/tracks/${playerTrack.id}/like`, {
       method: "PATCH",
     });

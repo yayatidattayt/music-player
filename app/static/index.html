@@ -7,8 +7,8 @@
     <meta name="description" content="A simple place to keep the music you love." />
     <title>Side B — Playlist Manager</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=20261013-eq-separate-2" />
-    <script src="/static/app.js?v=20261013-eq-separate-2" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20261018-eq-knobs-3" />
+    <script src="/static/app.js?v=20261018-eq-knobs-3" defer></script>
   </head>
   <body class="auth-mode">
     <section id="auth-gate" class="auth-gate" aria-labelledby="auth-title">
@@ -103,12 +103,6 @@
           <span class="liked-songs-icon">✦</span>
           <span>Song Lab</span>
           <small>tempo · key · details</small>
-        </button>
-
-        <button id="director-button" class="sidebar-tool-button" type="button">
-          <span class="liked-songs-icon">✧</span>
-          <span>AI Director</span>
-          <small>build a listening flow</small>
         </button>
 
         <button id="room-button" class="sidebar-tool-button room-launch-button" type="button">
@@ -217,47 +211,6 @@
         <div class="dialog-actions">
           <button class="button button-quiet" type="button" data-close-dialog="song-lab-dialog">Close</button>
           <button class="button button-accent" type="submit" id="song-lab-submit">Analyze song</button>
-        </div>
-      </form>
-    </dialog>
-
-    <dialog id="director-dialog" class="edit-dialog">
-      <form id="director-form" class="dialog-form">
-        <div class="dialog-topline">
-          <span class="eyebrow">AI Music Director</span>
-          <button class="dialog-close" type="button" data-close-dialog="director-dialog" aria-label="Close">×</button>
-        </div>
-        <h2>Build a listening flow</h2>
-        <p class="dialog-intro">Choose a song and let the deterministic music engine shape the next run.</p>
-        <label for="director-mode">How do you want to use Director?</label>
-        <select id="director-mode">
-          <option value="simple" selected>Simple · just make me a good mix</option>
-          <option value="musician">Musician · show detailed controls</option>
-        </select>
-        <label for="director-seed">Seed track</label>
-        <select id="director-seed" required></select>
-        <p id="director-seed-details" class="file-help">Choose a seed to inspect its musical details.</p>
-        <label for="director-track-count">How many songs?</label>
-        <input id="director-track-count" type="number" min="1" max="50" value="10" required />
-        <div id="director-musician-controls" hidden>
-          <label for="director-bpm">Target BPM <span class="optional">(optional)</span></label>
-          <input id="director-bpm" type="number" min="30" max="240" placeholder="120" />
-          <label for="director-bpm-tolerance">BPM tolerance</label>
-          <select id="director-bpm-tolerance">
-            <option value="4">Very tight · ±4 BPM</option>
-            <option value="8" selected>Balanced · ±8 BPM</option>
-            <option value="15">Flexible · ±15 BPM</option>
-          </select>
-        </div>
-        <label for="director-mood">Mood for online discoveries <span class="optional">(optional)</span></label>
-        <input id="director-mood" maxlength="80" placeholder="dark night-drive" />
-        <label for="director-language">Language for online discoveries <span class="optional">(optional)</span></label>
-        <input id="director-language" maxlength="40" placeholder="English" />
-        <div id="director-status" class="file-help" hidden aria-live="polite"></div>
-        <div id="director-result" class="song-lab-result" hidden></div>
-        <div class="dialog-actions">
-          <button class="button button-quiet" type="button" data-close-dialog="director-dialog">Close</button>
-          <button class="button button-accent" type="submit" id="director-submit">Generate mix</button>
         </div>
       </form>
     </dialog>
@@ -452,24 +405,21 @@
         </button>
       </div>
 
-      <div id="graphic-eq-panel" class="graphic-eq-panel" hidden aria-label="Parametric EQ 2 alternative">
+      <div id="graphic-eq-panel" class="graphic-eq-panel" hidden aria-label="Parametric EQ 2">
         <div class="graphic-eq-heading">
-          <span><strong>Parametric EQ 2 <em>alternative</em></strong><small>Use this mode instead of the 10-band EQ</small></span>
+          <span><strong>Parametric EQ 2 <em>seven bands</em></strong><small>Drag a band • wheel to change Q • double-click to reset</small></span>
           <div class="graphic-eq-actions"><button id="graphic-eq-bypass" class="player-button graphic-eq-bypass" type="button" aria-pressed="false">Bypass</button><button id="graphic-eq-reset" class="player-button" type="button">Reset</button><button id="graphic-eq-close" class="player-button" type="button" aria-label="Show 10-band equalizer">10-band</button></div>
         </div>
         <div class="graphic-eq-toolbar">
           <div class="graphic-eq-presets" role="group" aria-label="Graphic equalizer presets">
             <button type="button" data-geq-preset="flat">Flat</button><button type="button" data-geq-preset="bass">Bass</button><button type="button" data-geq-preset="smile">Smile</button><button type="button" data-geq-preset="vocal">Vocal</button><button type="button" data-geq-preset="club">Club</button>
-          </div><span class="graphic-eq-range">±18 dB</span>
+          </div><div class="graphic-eq-options" role="group" aria-label="Parametric EQ options"><button id="graphic-eq-hq" type="button" aria-pressed="false">HQ</button><button id="graphic-eq-monitor" type="button" aria-pressed="true">MONITOR</button><button id="graphic-eq-compare" type="button" aria-pressed="false">COMPARE</button></div><span class="graphic-eq-range">20 Hz — 20 kHz&nbsp;&nbsp; ±18 dB</span>
         </div>
-        <div class="graphic-eq-graph-wrap"><canvas id="graphic-eq-graph" class="graphic-eq-graph" aria-label="Drag the numbered EQ points to shape the curve"></canvas><div class="graphic-eq-y-labels" aria-hidden="true"><span>+18</span><span>+12</span><span>+6</span><span>0</span><span>-6</span><span>-12</span><span>-18</span></div></div>
+        <div class="graphic-eq-graph-wrap"><canvas id="graphic-eq-graph" class="graphic-eq-graph" aria-label="Drag the numbered EQ points to shape the curve"></canvas><div class="graphic-eq-note-strip" aria-hidden="true"><span>C1</span><span>C2</span><span>C3</span><span>C4</span><span>C5</span><span>C6</span><span>C7</span><span>C8</span><div><i>SUB</i><i>BASS</i><i>LOW MID</i><i>MID</i><i>HIGH MID</i><i>PRS</i><i>TREBLE</i></div></div><div class="graphic-eq-y-labels" aria-hidden="true"><span>+18</span><span>+12</span><span>+6</span><span>0</span><span>-6</span><span>-12</span><span>-18</span></div><div class="graphic-eq-band-strip" role="group" aria-label="Graphic EQ band sliders and controls"><div class="graphic-eq-faders"><div class="graphic-eq-fader-column"><span class="graphic-eq-fader-cap" style="--band-color:#c76bff">↕</span><input class="graphic-eq-fader" data-geq-fader="0" type="range" min="-18" max="18" step="0.1" value="0" aria-label="Band 1 gain"><button type="button" data-geq-select="0" class="is-selected">1</button></div><div class="graphic-eq-fader-column"><span class="graphic-eq-fader-cap" style="--band-color:#e979b1">↕</span><input class="graphic-eq-fader" data-geq-fader="1" type="range" min="-18" max="18" step="0.1" value="0" aria-label="Band 2 gain"><button type="button" data-geq-select="1">2</button></div><div class="graphic-eq-fader-column"><span class="graphic-eq-fader-cap" style="--band-color:#de8b70">↕</span><input class="graphic-eq-fader" data-geq-fader="2" type="range" min="-18" max="18" step="0.1" value="0" aria-label="Band 3 gain"><button type="button" data-geq-select="2">3</button></div><div class="graphic-eq-fader-column"><span class="graphic-eq-fader-cap" style="--band-color:#ddd56b">↕</span><input class="graphic-eq-fader" data-geq-fader="3" type="range" min="-18" max="18" step="0.1" value="0" aria-label="Band 4 gain"><button type="button" data-geq-select="3">4</button></div><div class="graphic-eq-fader-column"><span class="graphic-eq-fader-cap" style="--band-color:#72d878">↕</span><input class="graphic-eq-fader" data-geq-fader="4" type="range" min="-18" max="18" step="0.1" value="0" aria-label="Band 5 gain"><button type="button" data-geq-select="4">5</button></div><div class="graphic-eq-fader-column"><span class="graphic-eq-fader-cap" style="--band-color:#72d6ca">↕</span><input class="graphic-eq-fader" data-geq-fader="5" type="range" min="-18" max="18" step="0.1" value="0" aria-label="Band 6 gain"><button type="button" data-geq-select="5">6</button></div><div class="graphic-eq-fader-column"><span class="graphic-eq-fader-cap" style="--band-color:#67a8ec">↕</span><input class="graphic-eq-fader" data-geq-fader="6" type="range" min="-18" max="18" step="0.1" value="0" aria-label="Band 7 gain"><button type="button" data-geq-select="6">7</button></div></div><div class="graphic-eq-knob-row"><span class="graphic-eq-knob-label">FREQ</span><input class="graphic-eq-knob" data-geq-knob="frequency" data-geq-band="0" type="range" min="0" max="1000" value="159" aria-label="Band 1 frequency"><input class="graphic-eq-knob" data-geq-knob="frequency" data-geq-band="1" type="range" min="0" max="1000" value="380" aria-label="Band 2 frequency"><input class="graphic-eq-knob" data-geq-knob="frequency" data-geq-band="2" type="range" min="0" max="1000" value="550" aria-label="Band 3 frequency"><input class="graphic-eq-knob" data-geq-knob="frequency" data-geq-band="3" type="range" min="0" max="1000" value="670" aria-label="Band 4 frequency"><input class="graphic-eq-knob" data-geq-knob="frequency" data-geq-band="4" type="range" min="0" max="1000" value="780" aria-label="Band 5 frequency"><input class="graphic-eq-knob" data-geq-knob="frequency" data-geq-band="5" type="range" min="0" max="1000" value="885" aria-label="Band 6 frequency"><input class="graphic-eq-knob" data-geq-knob="frequency" data-geq-band="6" type="range" min="0" max="1000" value="960" aria-label="Band 7 frequency"></div><div class="graphic-eq-knob-row"><span class="graphic-eq-knob-label">BW</span><input class="graphic-eq-knob" data-geq-knob="q" data-geq-band="0" type="range" min="0.1" max="18" step="0.01" value="1.05" aria-label="Band 1 Q"><input class="graphic-eq-knob" data-geq-knob="q" data-geq-band="1" type="range" min="0.1" max="18" step="0.01" value="1.05" aria-label="Band 2 Q"><input class="graphic-eq-knob" data-geq-knob="q" data-geq-band="2" type="range" min="0.1" max="18" step="0.01" value="1.05" aria-label="Band 3 Q"><input class="graphic-eq-knob" data-geq-knob="q" data-geq-band="3" type="range" min="0.1" max="18" step="0.01" value="1.05" aria-label="Band 4 Q"><input class="graphic-eq-knob" data-geq-knob="q" data-geq-band="4" type="range" min="0.1" max="18" step="0.01" value="1.05" aria-label="Band 5 Q"><input class="graphic-eq-knob" data-geq-knob="q" data-geq-band="6" type="range" min="0.1" max="18" step="0.01" value="1.05" aria-label="Band 6 Q"><input class="graphic-eq-knob" data-geq-knob="q" data-geq-band="6" type="range" min="0.1" max="18" step="0.01" value="1.05" aria-label="Band 7 Q"></div></div></div>
         <div class="graphic-eq-frequencies" aria-hidden="true"><span>20</span><span>50</span><span>100</span><span>200</span><span>500</span><span>1k</span><span>2k</span><span>5k</span><span>10k</span><span>20k</span></div>
         <div class="graphic-eq-readout" id="graphic-eq-readout" aria-live="polite">Select a point to edit its gain</div>
-        <div class="graphic-eq-band-strip" role="group" aria-label="Graphic EQ bands">
-          <button type="button" data-geq-select="0" class="is-selected">1</button><button type="button" data-geq-select="1">2</button><button type="button" data-geq-select="2">3</button><button type="button" data-geq-select="3">4</button><button type="button" data-geq-select="4">5</button><button type="button" data-geq-select="5">6</button><button type="button" data-geq-select="6">7</button>
-        </div>
         <div class="graphic-eq-inspector" aria-label="Selected graphic EQ band controls">
-          <label>Type<select id="graphic-eq-type"><option value="highpass">Low cut</option><option value="lowshelf">Low shelf</option><option value="peaking" selected>Bell</option><option value="notch">Notch</option><option value="highshelf">High shelf</option><option value="lowpass">High cut</option></select></label>
+          <label>Type<select id="graphic-eq-type"><option value="highpass">High pass / low cut</option><option value="lowshelf">Low shelf</option><option value="peaking" selected>Peaking / bell</option><option value="bandpass">Band pass</option><option value="notch">Notch</option><option value="highshelf">High shelf</option><option value="lowpass">Low pass / high cut</option></select></label>
           <label>Frequency<strong><output id="graphic-eq-frequency-value">60 Hz</output></strong><input id="graphic-eq-frequency" type="range" min="0" max="1000" step="1" value="159"></label>
           <label>Gain<strong><output id="graphic-eq-gain-value">0.0 dB</output></strong><input id="graphic-eq-gain" type="range" min="-18" max="18" step="0.1" value="0"></label>
           <label>Q / BW<strong><output id="graphic-eq-q-value">1.05</output></strong><input id="graphic-eq-q" type="range" min="0.1" max="18" step="0.01" value="1.05"></label>
@@ -650,7 +600,7 @@
           <section class="playback-queue" aria-labelledby="queue-title">
             <div class="queue-heading">
               <h2 id="queue-title">Up next</h2>
-              <div class="queue-actions"><button class="queue-clear" type="button" data-action="smart-queue">Smart flow</button><button class="queue-clear" type="button" data-action="remove-selected-queue">Remove selected</button><button class="queue-clear" type="button" data-action="clear-queue">Clear</button></div>
+              <div class="queue-actions"><button class="queue-clear" type="button" data-action="remove-selected-queue">Remove selected</button><button class="queue-clear" type="button" data-action="clear-queue">Clear</button></div>
             </div>
             <ol id="playback-queue" class="queue-list"></ol>
           </section>
@@ -667,7 +617,7 @@
               <h2 id="lyrics-title">Lyrics</h2>
             </div>
             <div class="lyrics-heading-actions">
-              <button id="lyrics-fetch" class="lyrics-edit" type="button">Find lyrics</button>
+              <button id="lyrics-fetch" class="lyrics-edit" type="button">Find licensed lyrics</button>
               <button id="lyrics-sync" class="lyrics-edit" type="button" title="Analyze the audio start and align timestamped lyrics">Sync audio</button>
               <button id="lyrics-edit" class="lyrics-edit" type="button">Edit</button>
               <button id="lyrics-close" class="lyrics-close" type="button" aria-label="Close lyrics panel" title="Close lyrics panel">×</button>
