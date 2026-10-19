@@ -338,17 +338,21 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
         client_config = client_info.get("web") or client_info.get("installed") or client_info
         client_id = client_config.get("client_id")
         claims = None
-        if credentials.id_token and client_id:
-            claims = id_token.verify_oauth2_token(credentials.id_token, google_requests.Request(), client_id)
-        if not claims and credentials.token:
-            # Some Google client configurations return a user-info token but
-            # no ID token. Keep sign-in compatible with both config formats.
-            from google.auth.transport.requests import AuthorizedSession
-            profile = AuthorizedSession(credentials).get(
-                "https://openidconnect.googleapis.com/v1/userinfo", timeout=15
-            )
-            profile.raise_for_status()
-            claims = profile.json()
+        try:
+            if credentials.id_token and client_id:
+                claims = id_token.verify_oauth2_token(credentials.id_token, google_requests.Request(), client_id)
+            if not claims and credentials.token:
+                # Some Google client configurations return a user-info token but
+                # no ID token. Keep sign-in compatible with both config formats.
+                from google.auth.transport.requests import AuthorizedSession
+                profile = AuthorizedSession(credentials).get(
+                    "https://openidconnect.googleapis.com/v1/userinfo", timeout=15
+                )
+                profile.raise_for_status()
+                claims = profile.json()
+        except Exception as exc:
+            detail = str(exc).replace("\n", " ").strip()[:240]
+            raise HTTPException(status_code=502, detail=f"Google profile lookup failed: {detail}") from exc
         if not claims:
             raise HTTPException(status_code=400, detail="Google did not return a usable identity token.")
         email = normalized_email(claims.get("email", ""))
@@ -367,7 +371,11 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
         token_json = credentials.to_json()
         folder_id = connection.drive_folder_id if connection else None
         if not folder_id:
-            folder_id = ensure_drive_folder(token_json, "YDKMusic")
+            try:
+                folder_id = ensure_drive_folder(token_json, "YDKMusic")
+            except Exception as exc:
+                detail = str(exc).replace("\n", " ").strip()[:240]
+                raise HTTPException(status_code=502, detail=f"Google Drive folder creation failed: {detail}") from exc
         if connection:
             connection.google_email = email
             connection.token_json = token_json
