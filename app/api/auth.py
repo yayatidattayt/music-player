@@ -278,7 +278,8 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
     if not state or state != request.query_params.get("state"):
         raise HTTPException(status_code=400, detail="Google authorization state is invalid or expired.")
     mode = request.cookies.get("ydkmusic_google_oauth_mode", "drive")
-    flow = _google_flow(request, GOOGLE_SIGNIN_SCOPES if mode == "signin" else GOOGLE_DRIVE_SCOPES)
+    scopes = GOOGLE_SIGNIN_SCOPES if mode == "signin" else GOOGLE_DRIVE_SCOPES
+    flow = _google_flow(request, scopes)
     verifier = request.cookies.get("ydkmusic_google_oauth_verifier")
     if verifier:
         flow.code_verifier = verifier
@@ -289,10 +290,27 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
         code = request.query_params.get("code")
         if not code:
             raise ValueError("Google did not return an authorization code.")
-        token_kwargs = {"code": code}
+        client_info = json.loads(os.getenv("GOOGLE_OAUTH_CLIENT_JSON", "{}"))
+        client_config = client_info.get("web") or client_info.get("installed") or client_info
+        from requests import post
+        token_payload = {
+            "code": code,
+            "client_id": client_config.get("client_id"),
+            "client_secret": client_config.get("client_secret"),
+            "redirect_uri": flow.redirect_uri,
+            "grant_type": "authorization_code",
+        }
         if verifier:
-            token_kwargs["code_verifier"] = verifier
-        flow.fetch_token(**token_kwargs)
+            token_payload["code_verifier"] = verifier
+        token_response = post("https://oauth2.googleapis.com/token", data=token_payload, timeout=20)
+        token_data = token_response.json()
+        if not token_response.ok:
+            detail = token_data.get("error_description") or token_data.get("error") or "token exchange rejected"
+            raise ValueError(str(detail))
+        token_data["client_id"] = client_config.get("client_id")
+        token_data["client_secret"] = client_config.get("client_secret")
+        from google.oauth2.credentials import Credentials
+        credentials = Credentials.from_authorized_user_info(token_data, scopes=scopes)
     except Exception as exc:
         # Keep the response actionable while avoiding credentials or tokens.
         detail = str(exc).replace("\n", " ").strip()[:240]
