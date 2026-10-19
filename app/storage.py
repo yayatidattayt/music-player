@@ -31,9 +31,19 @@ def _drive_service(token_json: str | None = None):
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
 
-    credentials = Credentials.from_authorized_user_info(
-        __import__("json").loads(token_json),
-        scopes=["https://www.googleapis.com/auth/drive.file"],
+    token_data = __import__("json").loads(token_json)
+    # A previously granted Google account may have no refresh_token in its
+    # saved credentials.  Drive can still use the current access token, so do
+    # not route this through from_authorized_user_info(), which rejects that
+    # valid response format.
+    credentials = Credentials(
+        token=token_data.get("token") or token_data.get("access_token"),
+        refresh_token=token_data.get("refresh_token"),
+        token_uri=token_data.get("token_uri") or "https://oauth2.googleapis.com/token",
+        client_id=token_data.get("client_id"),
+        client_secret=token_data.get("client_secret"),
+        scopes=token_data.get("scopes") or ["https://www.googleapis.com/auth/drive.file"],
+        id_token=token_data.get("id_token"),
     )
     if credentials.expired and credentials.refresh_token:
         from google.auth.transport.requests import Request
