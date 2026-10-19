@@ -174,6 +174,33 @@ const HOME_FEATURE_TRACK = {
   play_count: 0,
   lyrics: "",
 };
+let featurePreviewObjectUrl = null;
+let featurePreviewCachePromise = null;
+
+async function getCachedFeaturePreviewUrl() {
+  if (featurePreviewObjectUrl) return featurePreviewObjectUrl;
+  if (featurePreviewCachePromise) return featurePreviewCachePromise;
+  featurePreviewCachePromise = (async () => {
+    try {
+      if (!window.caches) return HOME_FEATURE_TRACK.audio_url;
+      const cache = await caches.open("ydkmusic-feature-preview-v1");
+      let response = await cache.match(HOME_FEATURE_TRACK.audio_url);
+      if (!response) {
+        response = await fetch(HOME_FEATURE_TRACK.audio_url, { credentials: "omit" });
+        if (!response.ok) throw new Error("Preview request failed");
+        await cache.put(HOME_FEATURE_TRACK.audio_url, response.clone());
+      }
+      const blob = await response.blob();
+      featurePreviewObjectUrl = URL.createObjectURL(blob);
+      return featurePreviewObjectUrl;
+    } catch {
+      return HOME_FEATURE_TRACK.audio_url;
+    } finally {
+      featurePreviewCachePromise = null;
+    }
+  })();
+  return featurePreviewCachePromise;
+}
 let playerTrack = null;
 let audioContext = null;
 let analyser = null;
@@ -2289,6 +2316,10 @@ async function playTrack(track, options = {}) {
   setupAudioAnalyzer();
   if (audioContext?.state === "suspended") {
     try { await audioContext.resume(); } catch { /* The user can enable playback with the visible Play control. */ }
+  }
+
+  if (track?.id === HOME_FEATURE_TRACK.id) {
+    track = { ...track, audio_url: await getCachedFeaturePreviewUrl() };
   }
 
   if (!track.audio_url) {
