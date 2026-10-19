@@ -289,9 +289,17 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
         code = request.query_params.get("code")
         if not code:
             raise ValueError("Google did not return an authorization code.")
-        flow.fetch_token(code=code)
+        token_kwargs = {"code": code}
+        if verifier:
+            token_kwargs["code_verifier"] = verifier
+        flow.fetch_token(**token_kwargs)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail="Google authorization could not be completed. Please try again.") from exc
+        # Keep the response actionable while avoiding credentials or tokens.
+        detail = str(exc).replace("\n", " ").strip()[:240]
+        raise HTTPException(
+            status_code=400,
+            detail=f"Google authorization could not be completed: {detail or 'token exchange rejected'}",
+        ) from exc
     credentials = flow.credentials
     if mode == "signin":
         from google.oauth2 import id_token
