@@ -275,7 +275,13 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
     mode = request.cookies.get("ydkmusic_google_oauth_mode", "drive")
     flow = _google_flow(request, GOOGLE_SIGNIN_SCOPES if mode == "signin" else GOOGLE_DRIVE_SCOPES)
     try:
-        flow.fetch_token(authorization_response=str(request.url))
+        # Use the configured HTTPS redirect URI from the OAuth flow. Rebuilding
+        # it from request.url can produce an internal HTTP URL behind Render's
+        # proxy and makes Google's token endpoint reject the exchange.
+        code = request.query_params.get("code")
+        if not code:
+            raise ValueError("Google did not return an authorization code.")
+        flow.fetch_token(code=code)
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Google authorization could not be completed. Please try again.") from exc
     credentials = flow.credentials
