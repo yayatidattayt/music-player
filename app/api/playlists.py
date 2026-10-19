@@ -161,7 +161,20 @@ def _drive_folder_id(db: Session) -> str | None:
     if not user_id:
         return None
     connection = db.scalar(select(GoogleDriveConnection).where(GoogleDriveConnection.user_id == user_id))
-    return connection.drive_folder_id if connection else None
+    if not connection:
+        return None
+    if connection.drive_folder_id:
+        return connection.drive_folder_id
+    # Sign-in must remain usable even if Drive folder provisioning was
+    # temporarily unavailable. Retry provisioning lazily on the first storage
+    # operation instead of failing authentication.
+    try:
+        folder_id = ensure_drive_folder(connection.token_json, "YDKMusic")
+        connection.drive_folder_id = folder_id
+        db.flush()
+        return folder_id
+    except Exception:
+        return None
 
 
 def _playlist_drive_folder(playlist: Playlist, db: Session) -> str | None:

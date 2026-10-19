@@ -374,8 +374,11 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
             try:
                 folder_id = ensure_drive_folder(token_json, "YDKMusic")
             except Exception as exc:
-                detail = str(exc).replace("\n", " ").strip()[:240]
-                raise HTTPException(status_code=502, detail=f"Google Drive folder creation failed: {detail}") from exc
+                # Do not turn a successful Google login into a server error
+                # when Drive API provisioning is temporarily unavailable.
+                # The token is still stored and folder provisioning can be
+                # retried when the user uploads or reconnects Drive.
+                folder_id = None
         if connection:
             connection.google_email = email
             connection.token_json = token_json
