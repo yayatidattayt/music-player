@@ -318,7 +318,6 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
             status_code=400,
             detail=f"Google authorization could not be completed: {detail or 'token exchange rejected'}",
         ) from exc
-    credentials = flow.credentials
     if mode == "signin":
         from google.oauth2 import id_token
         from google.auth.transport import requests as google_requests
