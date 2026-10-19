@@ -56,13 +56,13 @@ def _client():
     )
 
 
-def upload_path(path: Path, content_type: str | None = None, key: str | None = None, token_json: str | None = None) -> str:
+def upload_path(path: Path, content_type: str | None = None, key: str | None = None, token_json: str | None = None, folder_id: str | None = None) -> str:
     if token_json or drive_enabled():
         from googleapiclient.http import MediaFileUpload
 
         service = _drive_service(token_json)
         metadata = {"name": path.name}
-        folder = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip()
+        folder = (folder_id or os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")).strip()
         if folder:
             metadata["parents"] = [folder]
         created = service.files().create(

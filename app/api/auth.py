@@ -39,7 +39,12 @@ COMMON_EMAIL_DOMAIN_TYPOS = {
     "icloud.con": "icloud.com",
 }
 GOOGLE_DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
-GOOGLE_SIGNIN_SCOPES = ["openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"]
+GOOGLE_SIGNIN_SCOPES = [
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/drive.file",
+]
 
 
 def _google_flow(request: Request, scopes: list[str] | None = None):
@@ -305,6 +310,30 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
             db.add(user)
             db.commit()
             db.refresh(user)
+        from ..storage import _drive_service
+
+        connection = db.scalar(select(GoogleDriveConnection).where(GoogleDriveConnection.user_id == user.id))
+        token_json = credentials.to_json()
+        folder_id = connection.drive_folder_id if connection else None
+        if not folder_id:
+            drive = _drive_service(token_json)
+            folder = drive.files().create(
+                body={"name": "YDKMusic", "mimeType": "application/vnd.google-apps.folder"},
+                fields="id",
+            ).execute()
+            folder_id = folder["id"]
+        if connection:
+            connection.google_email = email
+            connection.token_json = token_json
+            connection.drive_folder_id = folder_id
+        else:
+            db.add(GoogleDriveConnection(
+                user_id=user.id,
+                google_email=email,
+                token_json=token_json,
+                drive_folder_id=folder_id,
+            ))
+        db.commit()
         response = RedirectResponse("/", status_code=303)
         create_session(user, db, response)
         response.delete_cookie("ydkmusic_google_oauth_state")

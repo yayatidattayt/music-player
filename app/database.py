@@ -63,6 +63,7 @@ def migrate_schema() -> None:
             "owner_id": "INTEGER REFERENCES users(id)",
         },
         "users": {"is_admin": "BOOLEAN NOT NULL DEFAULT FALSE"},
+        "google_drive_connections": {"drive_folder_id": "VARCHAR(255)"},
         "listening_events": {
             "user_id": "INTEGER REFERENCES users(id)",
         },

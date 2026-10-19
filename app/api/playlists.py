@@ -153,12 +153,20 @@ def _drive_token(db: Session) -> str | None:
     return connection.token_json if connection else None
 
 
+def _drive_folder_id(db: Session) -> str | None:
+    user_id = db.info.get("current_user_id")
+    if not user_id:
+        return None
+    connection = db.scalar(select(GoogleDriveConnection).where(GoogleDriveConnection.user_id == user_id))
+    return connection.drive_folder_id if connection else None
+
+
 def store_audio_file(path: Path, filename: str, content_type: str | None, db: Session) -> str:
     """Store audio in R2 when configured, otherwise keep local development storage."""
     token_json = _drive_token(db)
     if not r2_enabled() and not token_json:
         return str(path.relative_to(UPLOAD_DIR.parent))
-    key = upload_path(path, content_type, f"audio/{uuid4().hex}-{Path(filename).name}", token_json=token_json)
+    key = upload_path(path, content_type, f"audio/{uuid4().hex}-{Path(filename).name}", token_json=token_json, folder_id=_drive_folder_id(db))
     path.unlink(missing_ok=True)
     return f"gdrive://{key.removeprefix('gdrive://')}" if token_json else f"r2://{key}"
 
@@ -168,7 +176,7 @@ def store_cover_file(path: Path, filename: str, content_type: str | None, db: Se
     token_json = _drive_token(db)
     if not r2_enabled() and not token_json:
         return str(path.relative_to(UPLOAD_DIR))
-    key = upload_path(path, content_type, f"covers/{uuid4().hex}-{Path(filename).name}", token_json=token_json)
+    key = upload_path(path, content_type, f"covers/{uuid4().hex}-{Path(filename).name}", token_json=token_json, folder_id=_drive_folder_id(db))
     path.unlink(missing_ok=True)
     return f"gdrive://{key.removeprefix('gdrive://')}" if token_json else f"r2://{key}"
 
