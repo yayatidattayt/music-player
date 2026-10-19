@@ -4326,6 +4326,9 @@ byId("sidebar-toggle").addEventListener("click", () => {
 byId("sidebar-reopen").addEventListener("click", () => setSidebarCollapsed(false));
 byId("auth-login-tab").addEventListener("click", () => setAuthMode("login"));
 byId("auth-signup-tab").addEventListener("click", () => setAuthMode("signup"));
+byId("google-signin-button")?.addEventListener("click", () => {
+  window.location.href = apiUrl("/api/auth/google/sign-in");
+});
 byId("auth-login-form").addEventListener("submit", (event) => submitAuth("login", event));
 byId("auth-signup-form").addEventListener("submit", (event) => submitAuth("signup", event));
 byId("logout-button").addEventListener("click", logout);

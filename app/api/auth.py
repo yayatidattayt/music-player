@@ -39,9 +39,10 @@ COMMON_EMAIL_DOMAIN_TYPOS = {
     "icloud.con": "icloud.com",
 }
 GOOGLE_DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+GOOGLE_SIGNIN_SCOPES = ["openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"]
 
 
-def _google_flow(request: Request):
+def _google_flow(request: Request, scopes: list[str] | None = None):
     client_config = os.getenv("GOOGLE_OAUTH_CLIENT_JSON", "").strip()
     if not client_config:
         raise HTTPException(status_code=503, detail="Google Drive linking is not configured yet.")
@@ -50,7 +51,7 @@ def _google_flow(request: Request):
     redirect_uri = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "").strip()
     if not redirect_uri:
         redirect_uri = str(request.url_for("google_drive_callback"))
-    flow = Flow.from_client_config(json.loads(client_config), scopes=GOOGLE_DRIVE_SCOPES)
+    flow = Flow.from_client_config(json.loads(client_config), scopes=scopes or GOOGLE_DRIVE_SCOPES)
     flow.redirect_uri = redirect_uri
     return flow
 
@@ -243,18 +244,54 @@ def google_drive_connect(request: Request, db: Session = Depends(get_db)) -> Red
     )
     response = RedirectResponse(authorization_url, status_code=307)
     response.set_cookie("ydkmusic_google_oauth_state", state, max_age=600, httponly=True, samesite="lax", secure=os.getenv("COOKIE_SECURE", "false").lower() == "true")
+    response.set_cookie("ydkmusic_google_oauth_mode", "drive", max_age=600, httponly=True, samesite="lax", secure=os.getenv("COOKIE_SECURE", "false").lower() == "true")
+    return response
+
+
+@router.get("/google/sign-in", name="google_sign_in")
+def google_sign_in(request: Request) -> RedirectResponse:
+    flow = _google_flow(request, GOOGLE_SIGNIN_SCOPES)
+    authorization_url, state = flow.authorization_url(access_type="offline", include_granted_scopes="true", prompt="select_account")
+    response = RedirectResponse(authorization_url, status_code=307)
+    secure = os.getenv("COOKIE_SECURE", "false").lower() == "true"
+    response.set_cookie("ydkmusic_google_oauth_state", state, max_age=600, httponly=True, samesite="lax", secure=secure)
+    response.set_cookie("ydkmusic_google_oauth_mode", "signin", max_age=600, httponly=True, samesite="lax", secure=secure)
     return response
 
 
 @router.get("/google-drive/callback", name="google_drive_callback")
 def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> RedirectResponse:
-    user = get_current_user(request, db)
     state = request.cookies.get("ydkmusic_google_oauth_state")
     if not state or state != request.query_params.get("state"):
         raise HTTPException(status_code=400, detail="Google authorization state is invalid or expired.")
-    flow = _google_flow(request)
+    mode = request.cookies.get("ydkmusic_google_oauth_mode", "drive")
+    flow = _google_flow(request, GOOGLE_SIGNIN_SCOPES if mode == "signin" else GOOGLE_DRIVE_SCOPES)
     flow.fetch_token(authorization_response=str(request.url))
     credentials = flow.credentials
+    if mode == "signin":
+        from google.oauth2 import id_token
+        from google.auth.transport import requests as google_requests
+
+        client_info = json.loads(os.getenv("GOOGLE_OAUTH_CLIENT_JSON", "{}"))
+        client_id = client_info.get("web", client_info).get("client_id")
+        claims = id_token.verify_oauth2_token(credentials.id_token, google_requests.Request(), client_id)
+        email = normalized_email(claims.get("email", ""))
+        if not email or not claims.get("email_verified"):
+            raise HTTPException(status_code=400, detail="Google did not provide a verified email address.")
+        user = db.scalar(select(User).where(func.lower(User.email) == email))
+        if not user:
+            display_name = str(claims.get("name") or email.split("@", 1)[0]).strip()[:80] or "Google user"
+            user = User(display_name=display_name, email=email, password_hash=password_hash(secrets.token_urlsafe(32)))
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        response = RedirectResponse("/", status_code=303)
+        create_session(user, db, response)
+        response.delete_cookie("ydkmusic_google_oauth_state")
+        response.delete_cookie("ydkmusic_google_oauth_mode")
+        return response
+
+    user = get_current_user(request, db)
     token_json = credentials.to_json()
     connection = db.scalar(select(GoogleDriveConnection).where(GoogleDriveConnection.user_id == user.id))
     if connection:
@@ -264,6 +301,7 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
     db.commit()
     response = RedirectResponse("/", status_code=303)
     response.delete_cookie("ydkmusic_google_oauth_state")
+    response.delete_cookie("ydkmusic_google_oauth_mode")
     return response
 
 
