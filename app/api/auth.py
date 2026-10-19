@@ -251,8 +251,11 @@ def google_drive_connect(request: Request, db: Session = Depends(get_db)) -> Red
         access_type="offline", include_granted_scopes="true", prompt="consent"
     )
     response = RedirectResponse(authorization_url, status_code=307)
-    response.set_cookie("ydkmusic_google_oauth_state", state, max_age=600, httponly=True, samesite="lax", secure=os.getenv("COOKIE_SECURE", "false").lower() == "true")
+    secure = os.getenv("COOKIE_SECURE", "false").lower() == "true"
+    response.set_cookie("ydkmusic_google_oauth_state", state, max_age=600, httponly=True, samesite="lax", secure=secure)
     response.set_cookie("ydkmusic_google_oauth_mode", "drive", max_age=600, httponly=True, samesite="lax", secure=os.getenv("COOKIE_SECURE", "false").lower() == "true")
+    if getattr(flow, "code_verifier", None):
+        response.set_cookie("ydkmusic_google_oauth_verifier", flow.code_verifier, max_age=600, httponly=True, samesite="lax", secure=secure)
     return response
 
 
@@ -264,6 +267,8 @@ def google_sign_in(request: Request) -> RedirectResponse:
     secure = os.getenv("COOKIE_SECURE", "false").lower() == "true"
     response.set_cookie("ydkmusic_google_oauth_state", state, max_age=600, httponly=True, samesite="lax", secure=secure)
     response.set_cookie("ydkmusic_google_oauth_mode", "signin", max_age=600, httponly=True, samesite="lax", secure=secure)
+    if getattr(flow, "code_verifier", None):
+        response.set_cookie("ydkmusic_google_oauth_verifier", flow.code_verifier, max_age=600, httponly=True, samesite="lax", secure=secure)
     return response
 
 
@@ -274,6 +279,9 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
         raise HTTPException(status_code=400, detail="Google authorization state is invalid or expired.")
     mode = request.cookies.get("ydkmusic_google_oauth_mode", "drive")
     flow = _google_flow(request, GOOGLE_SIGNIN_SCOPES if mode == "signin" else GOOGLE_DRIVE_SCOPES)
+    verifier = request.cookies.get("ydkmusic_google_oauth_verifier")
+    if verifier:
+        flow.code_verifier = verifier
     try:
         # Use the configured HTTPS redirect URI from the OAuth flow. Rebuilding
         # it from request.url can produce an internal HTTP URL behind Render's
@@ -339,6 +347,7 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
         create_session(user, db, response)
         response.delete_cookie("ydkmusic_google_oauth_state")
         response.delete_cookie("ydkmusic_google_oauth_mode")
+        response.delete_cookie("ydkmusic_google_oauth_verifier")
         return response
 
     user = get_current_user(request, db)
@@ -352,6 +361,7 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
     response = RedirectResponse("/", status_code=303)
     response.delete_cookie("ydkmusic_google_oauth_state")
     response.delete_cookie("ydkmusic_google_oauth_mode")
+    response.delete_cookie("ydkmusic_google_oauth_verifier")
     return response
 
 
