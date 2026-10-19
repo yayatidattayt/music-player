@@ -109,3 +109,27 @@ class YouTubeDownloadRequest(BaseModel):
 class YouTubeSearchRequest(BaseModel):
     query: str = Field(min_length=2, max_length=200)
     playlist_id: int = Field(gt=0)
+
+
+class DirectorGenerateRequest(BaseModel):
+    seed_track_id: int | None = Field(default=None, gt=0)
+    seed_playlist_id: int | None = Field(default=None, gt=0)
+    target_track_count: int = Field(default=10, ge=1, le=50)
+    target_duration_seconds: int | None = Field(default=None, gt=0, le=86_400)
+    target_bpm: float | None = Field(default=None, gt=30, le=240)
+    bpm_tolerance: float = Field(default=20, gt=0, le=40)
+    max_tracks: int = Field(default=30, ge=1, le=100)
+
+
+class DirectorSaveRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str | None = None
+    track_ids: list[int] = Field(min_length=1, max_length=100)
+
+
+class DirectorDiscoverRequest(BaseModel):
+    seed_track_id: int = Field(gt=0)
+    mood: str | None = Field(default=None, max_length=80)
+    count: int = Field(default=15, ge=1, le=15)
+    playlist_id: int | None = Field(default=None, gt=0)
+    language: str | None = Field(default=None, max_length=40)

@@ -56,6 +56,9 @@ from ..schemas import (
     ListeningTimeUpdate,
     YouTubeDownloadRequest,
     YouTubeSearchRequest,
+    DirectorGenerateRequest,
+    DirectorSaveRequest,
+    DirectorDiscoverRequest,
 )
 from ..storage import delete_object, download_bytes, drive_enabled, ensure_drive_folder, r2_enabled, signed_url, upload_path
 
@@ -2179,3 +2182,140 @@ def search_youtube_audio(req: YouTubeSearchRequest, db: DbSession) -> Track:
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"YouTube search failed: {e}") from e
+
+
+# Director compatibility helpers.  These stay deliberately independent from
+# the download path so discovery can preview candidates without creating DB
+# rows or downloading audio.
+def create_director_cover(label: str) -> dict[str, str]:
+    token = uuid4().hex
+    filename = f"director-{token}.svg"
+    path = cover_dir / filename
+    safe_label = escape(re.sub(r"[^A-Za-z0-9 &-]", "", label)[:28] or "Director Mix")
+    path.write_text(
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800"><rect width="800" height="800" fill="#171a2b"/><text x="60" y="650" fill="white" font-size="54">{safe_label}</text></svg>',
+        encoding="utf-8",
+    )
+    return {"filename": filename, "path": str(path.relative_to(UPLOAD_DIR.parent)), "content_type": "image/svg+xml"}
+
+
+def lookup_director_candidate_features(title: str, artist: str) -> dict:
+    return {}
+
+
+def analyze_catalog_preview(url: str) -> dict:
+    return {}
+
+
+def _director_key_ok(first: str | None, second: str | None) -> bool:
+    if not first or not second:
+        return True
+    return director_key_score(first, second) >= 0.45
+
+
+def director_key_score(first: str | None, second: str | None) -> float:
+    if not first or not second:
+        return 0.15
+    left = re.search(r"([A-G])(?:#|♯|b|♭)?", first.upper())
+    right = re.search(r"([A-G])(?:#|♯|b|♭)?", second.upper())
+    if not left or not right:
+        return 0.15
+    return 1.0 if left.group(1) == right.group(1) else 0.45
+
+
+def director_track_score(seed: Track, candidate: Track, bpm_tolerance: float = 8) -> dict:
+    sf = seed.features
+    cf = candidate.features
+    bpm_gap = bpm_difference(sf.bpm, cf.bpm) if sf and cf else None
+    bpm_score = 0.15 if bpm_gap is None else max(0.0, 1.0 - bpm_gap / max(1, bpm_tolerance * 2))
+    key_score = director_key_score(sf.musical_key if sf else None, cf.musical_key if cf else None)
+    same_language = not sf or not cf or not sf.language or not cf.language or normalize_language(sf.language) == normalize_language(cf.language)
+    return {"score": round(0.55 * bpm_score + 0.35 * key_score + (0.10 if same_language else 0), 4)}
+
+
+@router.post("/director/generate")
+def generate_director_mix(payload: DirectorGenerateRequest, db: DbSession) -> dict:
+    if not payload.seed_track_id and not payload.seed_playlist_id:
+        raise HTTPException(status_code=422, detail="Provide seed_track_id or seed_playlist_id.")
+    seed = get_track_or_404(payload.seed_track_id, db) if payload.seed_track_id else None
+    if seed is None:
+        playlist = get_playlist_or_404(payload.seed_playlist_id, db)
+        seed = playlist.tracks[0] if playlist.tracks else None
+    if seed is None or (payload.seed_playlist_id and seed.playlist_id != payload.seed_playlist_id):
+        raise HTTPException(status_code=422, detail="The selected song is not in the selected playlist.")
+    owner_id = current_owner_id(db)
+    if db.scalar(select(Playlist.owner_id).where(Playlist.id == seed.playlist_id)) != owner_id:
+        raise HTTPException(status_code=404, detail="Track not found.")
+    candidates = list(db.scalars(select(Track).join(Playlist).where(Playlist.owner_id == owner_id, Track.id != seed.id)).all())
+    if payload.seed_playlist_id:
+        candidates = [track for track in candidates if track.playlist_id == payload.seed_playlist_id]
+    selected = [seed]
+    for candidate in candidates:
+        sf, cf = seed.features, candidate.features
+        if sf and cf and sf.language and cf.language and normalize_language(sf.language) != normalize_language(cf.language):
+            continue
+        if sf and cf and sf.bpm and cf.bpm and bpm_difference(sf.bpm, cf.bpm) > payload.bpm_tolerance:
+            continue
+        if sf and cf and not _director_key_ok(sf.musical_key, cf.musical_key):
+            continue
+        selected.append(candidate)
+        if len(selected) >= min(payload.target_track_count, payload.max_tracks):
+            break
+    return {"session_id": None, "seed_track_id": seed.id, "target_track_count": payload.target_track_count, "items": [{"position": i, "track": TrackRead.model_validate(track).model_dump(mode="json"), "transition": None if i == 0 else director_track_score(selected[i-1], track, payload.bpm_tolerance)} for i, track in enumerate(selected)], "warnings": []}
+
+
+@router.post("/director/save", response_model=PlaylistRead, status_code=status.HTTP_201_CREATED)
+def save_director_mix(payload: DirectorSaveRequest, db: DbSession) -> Playlist:
+    owner_id = current_owner_id(db)
+    tracks = list(db.scalars(select(Track).join(Playlist).where(Track.id.in_(payload.track_ids), Playlist.owner_id == owner_id)).all())
+    if not tracks:
+        raise HTTPException(status_code=404, detail="No matching tracks found.")
+    cover = create_director_cover(payload.name)
+    playlist = Playlist(owner_id=owner_id, name=unique_playlist_name(payload.name, db, owner_id), description=payload.description, cover_filename=cover["filename"], cover_path=cover["path"], cover_content_type=cover["content_type"])
+    db.add(playlist)
+    db.flush()
+    seen = set()
+    for position, source in enumerate(tracks):
+        if source.id in seen:
+            continue
+        seen.add(source.id)
+        copied = Track(playlist_id=playlist.id, title=source.title, artist=source.artist, album=source.album, lyrics=source.lyrics, genre=source.genre, duration_seconds=source.duration_seconds, audio_filename=source.audio_filename, audio_path=source.audio_path, audio_content_type=source.audio_content_type, cover_filename=source.cover_filename, cover_path=source.cover_path, cover_content_type=source.cover_content_type, position=position)
+        db.add(copied)
+        db.flush()
+        if source.features:
+            db.add(TrackFeatures(track_id=copied.id, bpm=source.features.bpm, musical_key=source.features.musical_key, energy=source.features.energy, danceability=source.features.danceability, loudness=source.features.loudness, language=source.features.language, feature_source=source.features.feature_source))
+    db.commit()
+    db.refresh(playlist)
+    return playlist
+
+
+@router.post("/director/discover")
+def discover_director_tracks(payload: DirectorDiscoverRequest, db: DbSession) -> dict:
+    seed = get_track_or_404(payload.seed_track_id, db)
+    query = " ".join(part for part in [seed.artist, seed.genre or "music", payload.mood, payload.language] if part)
+    with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "extract_flat": True, "socket_timeout": 20}) as ydl:
+        result = ydl.extract_info(f"ytsearch{max(payload.count * 3, 10)}:{query}", download=False) or {}
+    discovered = []
+    for entry in result.get("entries") or []:
+        if len(discovered) >= payload.count:
+            break
+        title = clean_imported_title(str(entry.get("title") or ""), str(entry.get("uploader") or ""))
+        artist = str(entry.get("uploader") or "Unknown artist").strip()
+        features = lookup_director_candidate_features(title, artist)
+        if not features:
+            try:
+                with urlopen(Request("https://itunes.apple.com/search?term=" + quote(title + " " + artist) + "&limit=1"), timeout=10) as response:
+                    catalog = json.loads(response.read().decode("utf-8"))
+                item = (catalog.get("results") or [None])[0]
+                if item:
+                    title = item.get("trackName") or title
+                    artist = item.get("artistName") or artist
+                    features = analyze_catalog_preview(item.get("previewUrl", ""))
+            except Exception:
+                features = {}
+        if not features.get("bpm") or not features.get("key"):
+            continue
+        if payload.language and features.get("language") and normalize_language(payload.language) != normalize_language(features["language"]):
+            continue
+        discovered.append({"url": entry.get("webpage_url") or entry.get("original_url") or (f"https://www.youtube.com/watch?v={entry.get('id')}" if entry.get("id") else ""), "title": title, "artist": artist, "duration_seconds": entry.get("duration"), "bpm": features.get("bpm"), "key": features.get("key"), "language": features.get("language"), "match_source": features.get("source")})
+    return {"playlist_id": None, "query": query, "requested": payload.count, "found": len(discovered), "tracks": discovered}
