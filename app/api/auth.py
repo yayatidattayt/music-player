@@ -262,7 +262,7 @@ def google_drive_connect(request: Request, db: Session = Depends(get_db)) -> Red
 @router.get("/google/sign-in", name="google_sign_in")
 def google_sign_in(request: Request) -> RedirectResponse:
     flow = _google_flow(request, GOOGLE_SIGNIN_SCOPES)
-    authorization_url, state = flow.authorization_url(access_type="offline", include_granted_scopes="true", prompt="select_account")
+    authorization_url, state = flow.authorization_url(access_type="offline", include_granted_scopes="true", prompt="consent")
     response = RedirectResponse(authorization_url, status_code=307)
     secure = os.getenv("COOKIE_SECURE", "false").lower() == "true"
     response.set_cookie("ydkmusic_google_oauth_state", state, max_age=600, httponly=True, samesite="lax", secure=secure)
@@ -310,7 +310,19 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
         token_data["client_id"] = client_config.get("client_id")
         token_data["client_secret"] = client_config.get("client_secret")
         from google.oauth2.credentials import Credentials
-        credentials = Credentials.from_authorized_user_info(token_data, scopes=scopes)
+        # Google may omit refresh_token when the account has already granted
+        # this client access.  The access token is still valid for this login;
+        # retain the refresh token when present, but do not reject the login
+        # merely because Google did not issue a new one.
+        credentials = Credentials(
+            token=token_data.get("access_token"),
+            refresh_token=token_data.get("refresh_token"),
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_config.get("client_id"),
+            client_secret=client_config.get("client_secret"),
+            scopes=scopes,
+            id_token=token_data.get("id_token"),
+        )
     except Exception as exc:
         # Keep the response actionable while avoiding credentials or tokens.
         detail = str(exc).replace("\n", " ").strip()[:240]
