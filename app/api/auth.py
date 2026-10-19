@@ -269,15 +269,32 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
         raise HTTPException(status_code=400, detail="Google authorization state is invalid or expired.")
     mode = request.cookies.get("ydkmusic_google_oauth_mode", "drive")
     flow = _google_flow(request, GOOGLE_SIGNIN_SCOPES if mode == "signin" else GOOGLE_DRIVE_SCOPES)
-    flow.fetch_token(authorization_response=str(request.url))
+    try:
+        flow.fetch_token(authorization_response=str(request.url))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Google authorization could not be completed. Please try again.") from exc
     credentials = flow.credentials
     if mode == "signin":
         from google.oauth2 import id_token
         from google.auth.transport import requests as google_requests
 
         client_info = json.loads(os.getenv("GOOGLE_OAUTH_CLIENT_JSON", "{}"))
-        client_id = client_info.get("web", client_info).get("client_id")
-        claims = id_token.verify_oauth2_token(credentials.id_token, google_requests.Request(), client_id)
+        client_config = client_info.get("web") or client_info.get("installed") or client_info
+        client_id = client_config.get("client_id")
+        claims = None
+        if credentials.id_token and client_id:
+            claims = id_token.verify_oauth2_token(credentials.id_token, google_requests.Request(), client_id)
+        if not claims and credentials.token:
+            # Some Google client configurations return a user-info token but
+            # no ID token. Keep sign-in compatible with both config formats.
+            from google.auth.transport.requests import AuthorizedSession
+            profile = AuthorizedSession(credentials).get(
+                "https://openidconnect.googleapis.com/v1/userinfo", timeout=15
+            )
+            profile.raise_for_status()
+            claims = profile.json()
+        if not claims:
+            raise HTTPException(status_code=400, detail="Google did not return a usable identity token.")
         email = normalized_email(claims.get("email", ""))
         if not email or not claims.get("email_verified"):
             raise HTTPException(status_code=400, detail="Google did not provide a verified email address.")
