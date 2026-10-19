@@ -91,6 +91,71 @@ const playlistSearch = byId("playlist-search");
 const connectionLabel = byId("connection-label");
 const statusLight = document.querySelector(".status-light");
 const audioEngine = byId("audio-engine");
+const nativePlayback = window.YDKMUSIC_PLATFORM === "mobile" ? window.Capacitor?.Plugins?.NativePlayback : null;
+let nativePlaybackActive = false;
+let nativePlaybackSnapshot = null;
+
+function nativePlaybackAvailable() {
+  return Boolean(nativePlayback && window.Capacitor?.isNativePlatform?.());
+}
+
+async function handoffPlaybackToAndroid() {
+  if (!nativePlaybackAvailable() || !playerTrack || audioEngine.paused || nativePlaybackActive) return;
+  try {
+    const queueTracks = typeof playbackTracks === "function"
+      ? playbackTracks().filter((track) => track?.audio_url)
+      : [playerTrack];
+    const queue = queueTracks.map((track) => ({
+      id: String(track.id ?? ""),
+      url: track.audio_url,
+      title: track.title || "Untitled song",
+      artist: track.artist || "Unknown artist",
+      album: track.album || state.activePlaylist?.name || "YDKMusic",
+      artworkUrl: track.cover_url || state.activePlaylist?.cover_url || "",
+    }));
+    await nativePlayback.play({
+      url: playerTrack.audio_url,
+      title: playerTrack.title || "Untitled song",
+      artist: playerTrack.artist || "Unknown artist",
+      album: playerTrack.album || state.activePlaylist?.name || "YDKMusic",
+      artworkUrl: playerTrack.cover_url || state.activePlaylist?.cover_url || "",
+      positionMs: Math.round((audioEngine.currentTime || 0) * 1000),
+      queue,
+      queueIndex: Math.max(0, queue.findIndex((track) => String(track.id) === String(playerTrack.id))),
+    });
+    audioEngine.pause();
+    nativePlaybackActive = true;
+  } catch (error) {
+    console.warn("Native background playback unavailable; keeping web playback.", error);
+  }
+}
+
+async function reclaimPlaybackFromAndroid() {
+  if (!nativePlaybackAvailable() || !nativePlaybackActive) return;
+  try {
+    const snapshot = await nativePlayback.getState();
+    const availableTracks = typeof playbackTracks === "function" ? playbackTracks() : [];
+    const nativeTrack = availableTracks.find((track) => String(track.id) === String(snapshot?.mediaId));
+    if (nativeTrack && String(nativeTrack.id) !== String(playerTrack?.id)) {
+      await playTrack(nativeTrack, { autoplay: false });
+    }
+    if (Number.isFinite(snapshot?.positionMs)) audioEngine.currentTime = Math.max(0, snapshot.positionMs / 1000);
+    await nativePlayback.pause();
+    if (snapshot?.isPlaying && playerTrack) await audioEngine.play();
+  } catch (error) {
+    console.warn("Could not reclaim native playback state.", error);
+  } finally {
+    nativePlaybackActive = false;
+    updatePlayerDisplay();
+  }
+}
+
+if (nativePlaybackAvailable()) {
+  nativePlayback.addListener("playbackState", (snapshot) => {
+    nativePlaybackSnapshot = snapshot;
+    if (document.hidden) updateMediaSessionState();
+  });
+}
 const visualizer = byId("now-playing-visualizer");
 const coverVisualizer = byId("now-playing-cover-visualizer");
 const topbarVisualizer = byId("topbar-visualizer");
@@ -3456,6 +3521,11 @@ audioEngine.addEventListener("ended", () => {
 });
 
 configureMediaSession();
+document.addEventListener("visibilitychange", () => {
+  if (!nativePlaybackAvailable() || !playerTrack) return;
+  if (document.hidden) void handoffPlaybackToAndroid();
+  else void reclaimPlaybackFromAndroid();
+});
 visualizer.hidden = true;
 drawVisualizer();
 window.addEventListener("pagehide", flushListeningTimeOnExit);

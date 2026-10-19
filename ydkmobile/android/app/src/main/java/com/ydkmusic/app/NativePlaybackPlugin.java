@@ -195,6 +195,19 @@ public final class NativePlaybackPlugin extends Plugin {
         });
     }
 
+    @PluginMethod
+    public void getState(PluginCall call) {
+        withController(call, mediaController -> {
+            JSObject payload = new JSObject();
+            MediaItem item = mediaController.getCurrentMediaItem();
+            payload.put("isPlaying", mediaController.isPlaying());
+            payload.put("positionMs", mediaController.getCurrentPosition());
+            payload.put("durationMs", mediaController.getDuration());
+            payload.put("mediaId", item == null ? "" : item.mediaId);
+            call.resolve(payload);
+        });
+    }
+
     @Override
     protected void handleOnDestroy() {
         if (controller != null) {

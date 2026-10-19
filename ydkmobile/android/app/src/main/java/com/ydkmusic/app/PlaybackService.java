@@ -11,7 +11,7 @@ import androidx.media3.session.MediaSessionService;
 
 /**
  * Owns the single native player used for Android background playback.
- * The Capacitor bridge will connect the web player UI to this service next.
+ * The Capacitor bridge hands playback to this service when the app is backgrounded.
  */
 public final class PlaybackService extends MediaSessionService {
     private ExoPlayer player;
