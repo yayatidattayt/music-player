@@ -78,7 +78,7 @@ public final class NativePlaybackPlugin extends Plugin {
                 @Override
                 public void onFailure(@NonNull Throwable throwable) {
                     controllerFuture = null;
-                    call.reject("Could not connect to native playback service.", throwable);
+                    call.reject("Could not connect to native playback service.", throwable.getMessage());
                 }
             }, MoreExecutors.directExecutor());
         } else {
@@ -91,7 +91,7 @@ public final class NativePlaybackPlugin extends Plugin {
 
                 @Override
                 public void onFailure(@NonNull Throwable throwable) {
-                    call.reject("Native playback is unavailable.", throwable);
+                    call.reject("Native playback is unavailable.", throwable.getMessage());
                 }
             }, MoreExecutors.directExecutor());
         }

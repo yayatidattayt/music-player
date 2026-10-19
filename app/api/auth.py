@@ -49,8 +49,11 @@ def _google_flow(request: Request, scopes: list[str] | None = None):
     from google_auth_oauthlib.flow import Flow
 
     redirect_uri = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "").strip()
-    if not redirect_uri:
-        redirect_uri = str(request.url_for("google_drive_callback"))
+    # Never let a placeholder redirect escape into the OAuth request. This is
+    # especially important on Render, where an old dashboard env value can
+    # survive after the service configuration is updated.
+    if not redirect_uri or "example.com" in redirect_uri.casefold():
+        redirect_uri = "https://ydkmusic.onrender.com/api/auth/google-drive/callback"
     flow = Flow.from_client_config(json.loads(client_config), scopes=scopes or GOOGLE_DRIVE_SCOPES)
     flow.redirect_uri = redirect_uri
     return flow

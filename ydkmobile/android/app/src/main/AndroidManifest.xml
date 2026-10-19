@@ -33,6 +33,16 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
+
+        <service
+            android:name=".PlaybackService"
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
     </application>
 
     <!-- Permissions -->
@@ -41,13 +51,4 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
-    <service
-        android:name=".PlaybackService"
-        android:exported="true"
-        android:foregroundServiceType="mediaPlayback">
-        <intent-filter>
-            <action android:name="androidx.media3.session.MediaSessionService" />
-            <action android:name="android.media.browse.MediaBrowserService" />
-        </intent-filter>
-    </service>
 </manifest>

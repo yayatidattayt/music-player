@@ -14,7 +14,7 @@ services:
       - key: GOOGLE_OAUTH_CLIENT_JSON
         sync: false
       - key: GOOGLE_OAUTH_REDIRECT_URI
-        sync: false
+        value: https://ydkmusic.onrender.com/api/auth/google-drive/callback
       - key: GOOGLE_DRIVE_FOLDER_ID
         sync: false
       - key: CORS_ORIGINS

@@ -6,3 +6,14 @@ data/*.db
 app/uploads/
 *.log
 current-flow.png
+
+# Local Android build tooling and generated caches
+ydkmobile/android-sdk/
+ydkmobile/android-sdk-tools*.zip
+ydkmobile/android-sdk-tools-extract/
+ydkmobile/jdk21/
+ydkmobile/jdk21.zip
+ydkmobile/.android-studio/
+ydkmobile/.gradle-temp/
+ydkmobile/.gradle-user-home/
+ydkmobile/android/local.properties
