@@ -310,18 +310,13 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
             db.add(user)
             db.commit()
             db.refresh(user)
-        from ..storage import _drive_service
+        from ..storage import ensure_drive_folder
 
         connection = db.scalar(select(GoogleDriveConnection).where(GoogleDriveConnection.user_id == user.id))
         token_json = credentials.to_json()
         folder_id = connection.drive_folder_id if connection else None
         if not folder_id:
-            drive = _drive_service(token_json)
-            folder = drive.files().create(
-                body={"name": "YDKMusic", "mimeType": "application/vnd.google-apps.folder"},
-                fields="id",
-            ).execute()
-            folder_id = folder["id"]
+            folder_id = ensure_drive_folder(token_json, "YDKMusic")
         if connection:
             connection.google_email = email
             connection.token_json = token_json

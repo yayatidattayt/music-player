@@ -42,6 +42,24 @@ def _drive_service(token_json: str | None = None):
     return build("drive", "v3", credentials=credentials, cache_discovery=False)
 
 
+def ensure_drive_folder(token_json: str, name: str, parent_id: str | None = None) -> str:
+    service = _drive_service(token_json)
+    if service is None:
+        raise RuntimeError("Google Drive storage is not configured.")
+    safe_name = name.strip()[:120] or "YDKMusic"
+    escaped_name = safe_name.replace("'", "\\'")
+    query = "trashed = false and mimeType = 'application/vnd.google-apps.folder' and name = '" + escaped_name + "'"
+    if parent_id:
+        query += f" and '{parent_id}' in parents"
+    matches = service.files().list(q=query, spaces="drive", fields="files(id)", pageSize=1).execute().get("files", [])
+    if matches:
+        return matches[0]["id"]
+    body = {"name": safe_name, "mimeType": "application/vnd.google-apps.folder"}
+    if parent_id:
+        body["parents"] = [parent_id]
+    return service.files().create(body=body, fields="id").execute()["id"]
+
+
 def _client():
     if not r2_enabled():
         return None

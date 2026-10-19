@@ -60,6 +60,7 @@ class Playlist(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    drive_folder_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     cover_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
     cover_path: Mapped[str | None] = mapped_column(String(500), nullable=True)

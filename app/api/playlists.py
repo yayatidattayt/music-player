@@ -57,7 +57,7 @@ from ..schemas import (
     YouTubeDownloadRequest,
     YouTubeSearchRequest,
 )
-from ..storage import delete_object, download_bytes, drive_enabled, r2_enabled, signed_url, upload_path
+from ..storage import delete_object, download_bytes, drive_enabled, ensure_drive_folder, r2_enabled, signed_url, upload_path
 
 
 router = APIRouter(tags=["Playlists and tracks"], dependencies=[Depends(get_current_user)])
@@ -161,12 +161,23 @@ def _drive_folder_id(db: Session) -> str | None:
     return connection.drive_folder_id if connection else None
 
 
-def store_audio_file(path: Path, filename: str, content_type: str | None, db: Session) -> str:
+def _playlist_drive_folder(playlist: Playlist, db: Session) -> str | None:
+    token_json = _drive_token(db)
+    root_id = _drive_folder_id(db)
+    if not token_json or not root_id:
+        return root_id
+    if not playlist.drive_folder_id:
+        playlist.drive_folder_id = ensure_drive_folder(token_json, playlist.name, root_id)
+        db.flush()
+    return playlist.drive_folder_id
+
+
+def store_audio_file(path: Path, filename: str, content_type: str | None, db: Session, folder_id: str | None = None) -> str:
     """Store audio in R2 when configured, otherwise keep local development storage."""
     token_json = _drive_token(db)
     if not r2_enabled() and not token_json:
         return str(path.relative_to(UPLOAD_DIR.parent))
-    key = upload_path(path, content_type, f"audio/{uuid4().hex}-{Path(filename).name}", token_json=token_json, folder_id=_drive_folder_id(db))
+    key = upload_path(path, content_type, f"audio/{uuid4().hex}-{Path(filename).name}", token_json=token_json, folder_id=folder_id or _drive_folder_id(db))
     path.unlink(missing_ok=True)
     return f"gdrive://{key.removeprefix('gdrive://')}" if token_json else f"r2://{key}"
 
@@ -1564,7 +1575,8 @@ async def upload_track(
     cover: UploadFile | None = File(default=None),
     db: Session = Depends(get_db),
 ) -> Track:
-    get_playlist_or_404(playlist_id, db)
+    playlist = get_playlist_or_404(playlist_id, db)
+    drive_folder_id = _playlist_drive_folder(playlist, db)
 
     if file.content_type and file.content_type not in ALLOWED_AUDIO_TYPES and not file.content_type.startswith("audio/"):
         raise HTTPException(
@@ -1631,7 +1643,7 @@ async def upload_track(
     selected_cover = uploaded_cover or embedded_cover or catalog_cover
     final_album = (album or imported_album or catalog.get("album"))
     final_genre = imported_genre or catalog.get("genre")
-    stored_audio_path = store_audio_file(saved_path, file.filename or safe_filename, file.content_type, db)
+    stored_audio_path = store_audio_file(saved_path, file.filename or safe_filename, file.content_type, db, drive_folder_id)
 
     track = Track(
         playlist_id=playlist_id,
@@ -2109,7 +2121,7 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
             # reliable final fallback for every YouTube import.
             remote_cover = save_remote_cover(youtube_thumbnail(info))
         ensure_unique_track(playlist.id, final_title, final_artist, db)
-        stored_audio_path = store_audio_file(downloaded_path, audio_filename, "audio/mpeg", db)
+        stored_audio_path = store_audio_file(downloaded_path, audio_filename, "audio/mpeg", db, _playlist_drive_folder(playlist, db))
 
         track = Track(
             playlist_id=playlist.id,
