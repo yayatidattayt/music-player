@@ -261,18 +261,22 @@ def read_audio_metadata(file_path: Path) -> dict:
 
 
 def analyze_audio_features(file_path: Path) -> dict:
-    """Estimate tempo and key from audio when optional librosa is installed."""
+    """Estimate tempo and key quickly from a short sample when librosa is available."""
     try:
         import librosa
     except ImportError:
         return {}
 
     try:
-        audio, sample_rate = librosa.load(file_path, sr=None, mono=True, duration=180)
+        # Feature analysis is enrichment, not a reason to delay a successful
+        # import. Decode a bounded sample at a fixed rate and use the fast
+        # chroma transform; CQT over several minutes can monopolize small
+        # hosted instances for longer than the download itself.
+        audio, sample_rate = librosa.load(file_path, sr=22050, mono=True, duration=35)
         if len(audio) < sample_rate * 4:
             return {}
         tempo, _ = librosa.beat.beat_track(y=audio, sr=sample_rate)
-        chroma = librosa.feature.chroma_cqt(y=audio, sr=sample_rate)
+        chroma = librosa.feature.chroma_stft(y=audio, sr=sample_rate, hop_length=512)
         profile = chroma.mean(axis=1)
         note_names = ("C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B")
         key_index = int(profile.argmax())
