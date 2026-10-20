@@ -2816,6 +2816,10 @@ function lyricOfTheDay(tracks) {
 
 function renderHome() {
   updatePageArtworkTheme();
+  if (isMobileShell && typeof renderMobileHome === "function") {
+    renderMobileHome();
+    return;
+  }
   const playlists = state.homePlaylists;
   const allTracks = playlists.flatMap((playlist) => playlist.tracks || []);
   const totalListens = state.stats?.total_listens ?? allTracks.reduce((sum, track) => sum + (track.play_count || 0), 0);
@@ -4272,7 +4276,7 @@ byId("player-art").addEventListener("click", () => {
   if (playerTrack) updateNowPlayingDisplay();
 });
 
-byId("player-lyrics").addEventListener("click", () => {
+byId("player-lyrics")?.addEventListener("click", () => {
   if (!playerTrack) return;
   updateNowPlayingDisplay();
   byId("lyrics-toggle").click();

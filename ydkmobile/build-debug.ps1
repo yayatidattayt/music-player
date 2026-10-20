@@ -1,10 +1,11 @@
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $env:JAVA_HOME = Join-Path $PSScriptRoot 'jdk21'
-# Use the user's Gradle cache so the wrapper can reuse its installed distribution.
-$env:GRADLE_USER_HOME = Join-Path $env:USERPROFILE '.gradle'
+$env:GRADLE_USER_HOME = Join-Path $PSScriptRoot '.gradle-user-home'
 $socketDirectory = Join-Path $projectRoot '.gradle-temp'
 New-Item -ItemType Directory -Force -Path $socketDirectory | Out-Null
+$env:TEMP = $socketDirectory
+$env:TMP = $socketDirectory
 # Windows packaged apps can give Java a virtualized temp path that cannot
 # bind Unix-domain sockets. A real workspace directory fixes Gradle's pipe.
 $env:JAVA_TOOL_OPTIONS = '-Djdk.net.unixdomain.tmpdir="' + $socketDirectory + '"'

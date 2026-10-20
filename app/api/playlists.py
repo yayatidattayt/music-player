@@ -12,7 +12,9 @@ import os
 import re
 import shutil
 import ssl
+import time
 import unicodedata
+from contextlib import contextmanager
 import yt_dlp
 from difflib import SequenceMatcher
 from html import escape, unescape
@@ -30,6 +32,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import RedirectResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from mutagen import File as MutagenFile
 from dotenv import load_dotenv
 
@@ -387,12 +390,15 @@ def ensure_track_features(track: Track, db: Session) -> None:
 
     metadata = {}
     if track.audio_path:
-        audio_path = Path(__file__).resolve().parents[1] / track.audio_path
-        if audio_path.exists():
-            metadata = read_audio_metadata(audio_path)
-            metadata.update(analyze_audio_features(audio_path))
-            if metadata.get("bpm") or metadata.get("key"):
-                persist_track_features(track, metadata, db, "local_audio")
+        try:
+            with materialize_track_audio(track, db) as audio_path:
+                metadata = read_audio_metadata(audio_path)
+                estimates = analyze_audio_features(audio_path)
+                metadata.update({key: value for key, value in estimates.items() if not metadata.get(key)})
+                if metadata.get("bpm") or metadata.get("key"):
+                    persist_track_features(track, metadata, db, "audio_analysis")
+        except (HTTPException, OSError):
+            pass
 
     if not (metadata.get("bpm") and metadata.get("key")):
         try:
@@ -746,7 +752,7 @@ def analyze_youtube_audio(title: str, artist: str | None) -> dict:
         return {}
     return {}
 
-def extract_embedded_cover(file_path: Path) -> dict | None:
+def extract_embedded_cover(file_path: Path, db: Session | None = None) -> dict | None:
     """Save the first embedded audio picture, when the format exposes one."""
     try:
         audio = MutagenFile(file_path)
@@ -764,6 +770,10 @@ def extract_embedded_cover(file_path: Path) -> dict | None:
         content_type = getattr(pictures[0], "mime", None)
     elif getattr(audio, "tags", None):
         for tag in audio.tags.values():
+            if isinstance(tag, list) and tag and tag[0].__class__.__name__ == "MP4Cover":
+                image_data = bytes(tag[0])
+                content_type = "image/png" if image_data.startswith(b"\x89PNG") else "image/jpeg"
+                break
             tag_name = tag.__class__.__name__
             if tag_name == "APIC":
                 image_data = getattr(tag, "data", None)
@@ -787,12 +797,12 @@ def extract_embedded_cover(file_path: Path) -> dict | None:
     saved_path.write_bytes(image_data)
     return {
         "filename": filename,
-        "path": str(saved_path.relative_to(UPLOAD_DIR)),
+        "path": store_cover_file(saved_path, filename, content_type, db) if db is not None else str(saved_path.relative_to(UPLOAD_DIR)),
         "content_type": content_type,
     }
 
 
-async def save_cover_upload(file: UploadFile) -> dict:
+async def save_cover_upload(file: UploadFile, db: Session) -> dict:
     extension = Path(file.filename or "").suffix.lower()
     extension = ALLOWED_COVER_TYPES.get(file.content_type or "", extension)
     if extension not in ALLOWED_COVER_EXTENSIONS:
@@ -820,7 +830,7 @@ async def save_cover_upload(file: UploadFile) -> dict:
             saved_path.unlink()
         raise
 
-    stored_path = store_cover_file(saved_path, file.filename or filename, file.content_type or "image/jpeg", db)
+    stored_path = await run_in_threadpool(store_cover_file, saved_path, file.filename or filename, file.content_type or "image/jpeg", db)
     return {
         "filename": filename,
         "path": stored_path,
@@ -839,7 +849,7 @@ def remove_cover(cover_path: str | None) -> None:
         old_path.unlink()
 
 
-def save_remote_cover(url: str | None) -> dict | None:
+def save_remote_cover(url: str | None, db: Session) -> dict | None:
     if not url:
         return None
     try:
@@ -848,10 +858,9 @@ def save_remote_cover(url: str | None) -> dict | None:
             content_type = (response.headers.get_content_type() or "").lower()
             extension = ALLOWED_COVER_TYPES.get(content_type)
             if not extension:
-                extension = ".jpg"
-                content_type = "image/jpeg"
+                return None
             image_data = response.read(MAX_COVER_SIZE + 1)
-        if len(image_data) > MAX_COVER_SIZE:
+        if not image_data or len(image_data) > MAX_COVER_SIZE:
             return None
         filename = f"{uuid4().hex}{extension}"
         saved_path = cover_dir / filename
@@ -863,6 +872,8 @@ def save_remote_cover(url: str | None) -> dict | None:
             "content_type": content_type,
         }
     except Exception:
+        if 'saved_path' in locals():
+            saved_path.unlink(missing_ok=True)
         return None
 
 
@@ -938,9 +949,9 @@ async def preview_track_metadata(file: UploadFile = File(...)) -> dict:
 
                 temporary_file.write(chunk)
 
-        metadata = read_audio_metadata(temporary_path)
-        metadata.update(analyze_audio_features(temporary_path))
-        embedded_cover = extract_embedded_cover(temporary_path)
+        metadata = await run_in_threadpool(read_audio_metadata, temporary_path)
+        metadata.update({key: value for key, value in (await run_in_threadpool(analyze_audio_features, temporary_path)).items() if not metadata.get(key)})
+        embedded_cover = await run_in_threadpool(extract_embedded_cover, temporary_path)
         return {
             "filename": file.filename,
             "cover_url": f"/covers/{embedded_cover['filename']}" if embedded_cover else None,
@@ -1522,7 +1533,7 @@ async def upload_playlist_cover(
     file: UploadFile = File(...),
 ) -> Playlist:
     playlist = get_playlist_or_404(playlist_id, db)
-    uploaded_cover = await save_cover_upload(file)
+    uploaded_cover = await save_cover_upload(file, db)
     remove_cover(playlist.cover_path)
     playlist.cover_filename = file.filename
     playlist.cover_path = uploaded_cover["path"]
@@ -1635,12 +1646,12 @@ async def upload_track(
             saved_path.unlink()
         raise
 
-    metadata = read_audio_metadata(saved_path)
-    metadata.update(analyze_audio_features(saved_path))
+    metadata = await run_in_threadpool(read_audio_metadata, saved_path)
+    metadata.update({key: value for key, value in (await run_in_threadpool(analyze_audio_features, saved_path)).items() if not metadata.get(key)})
     fallback_title = Path(file.filename or "Untitled song").stem
     imported_title = metadata.get("title") or fallback_title
     known_artist = artist or metadata.get("artist")
-    catalog = lookup_cover_art(
+    catalog = await run_in_threadpool(lookup_cover_art,
         catalog_title(title or imported_title, known_artist),
         known_artist,
     )
@@ -1654,17 +1665,17 @@ async def upload_track(
     )
     final_artist = (artist or metadata.get("artist") or catalog.get("artist") or "Unknown artist").strip()
     ensure_unique_track(playlist_id, final_title, final_artist, db)
-    embedded_cover = extract_embedded_cover(saved_path)
-    uploaded_cover = await save_cover_upload(cover) if cover else None
+    embedded_cover = await run_in_threadpool(extract_embedded_cover, saved_path, db)
+    uploaded_cover = await save_cover_upload(cover, db) if cover else None
     catalog_cover = (
-        save_remote_cover(catalog.get("cover_url"))
+        await run_in_threadpool(save_remote_cover, catalog.get("cover_url"), db)
         if not uploaded_cover and not embedded_cover and catalog.get("cover_url")
         else None
     )
     selected_cover = uploaded_cover or embedded_cover or catalog_cover
     final_album = (album or imported_album or catalog.get("album"))
     final_genre = imported_genre or catalog.get("genre")
-    stored_audio_path = store_audio_file(saved_path, file.filename or safe_filename, file.content_type, db, drive_folder_id)
+    stored_audio_path = await run_in_threadpool(store_audio_file, saved_path, file.filename or safe_filename, file.content_type, db, drive_folder_id)
 
     track = Track(
         playlist_id=playlist_id,
@@ -1780,7 +1791,7 @@ def redirect_cover_file(cover_path: str | None) -> RedirectResponse:
         if not url:
             raise HTTPException(status_code=503, detail="Remote artwork storage is not configured.")
         return RedirectResponse(url=url, status_code=307)
-    local_path = Path(__file__).resolve().parents[1] / cover_path
+    local_path = cover_dir / Path(cover_path).name
     if not local_path.exists():
         raise HTTPException(status_code=404, detail="The cover image is missing from storage.")
     return RedirectResponse(url=f"/covers/{local_path.name}", status_code=307)
@@ -1846,11 +1857,9 @@ def enrich_track_metadata(track_id: int, db: DbSession) -> Track:
         known_artist = track.artist if track.artist.casefold() not in {"unknown", "unknown artist"} else None
         cleaned_title = clean_imported_title(track.title, known_artist)
         catalog = lookup_cover_art(cleaned_title, known_artist)
-        if catalog.get("title"):
+        if catalog.get("title") and track.title.casefold() in {"untitled song", "unknown track"}:
             track.title = clean_imported_title(catalog["title"], catalog.get("artist") or known_artist)
-        else:
-            track.title = cleaned_title
-        if catalog.get("artist"):
+        if catalog.get("artist") and not known_artist:
             track.artist = catalog["artist"]
         genre = str(catalog.get("genre") or "").strip()
         if genre and not track.genre:
@@ -1858,13 +1867,13 @@ def enrich_track_metadata(track_id: int, db: DbSession) -> Track:
         if not track.album and catalog.get("album"):
             track.album = catalog["album"]
         if not track.cover_path and catalog.get("cover_url"):
-            cover = save_remote_cover(catalog["cover_url"])
+            cover = save_remote_cover(catalog["cover_url"], db)
             if cover:
                 track.cover_filename = cover["filename"]
                 track.cover_path = cover["path"]
                 track.cover_content_type = cover["content_type"]
         if not track.cover_path:
-            cover = save_remote_cover(lookup_youtube_thumbnail(cleaned_title, known_artist))
+            cover = save_remote_cover(lookup_youtube_thumbnail(cleaned_title, known_artist), db)
             if cover:
                 track.cover_filename = cover["filename"]
                 track.cover_path = cover["path"]
@@ -1879,22 +1888,62 @@ def enrich_track_metadata(track_id: int, db: DbSession) -> Track:
 @router.post("/tracks/{track_id}/analyze-features", response_model=TrackRead)
 def analyze_existing_track_features(track_id: int, db: DbSession) -> Track:
     track = get_track_or_404(track_id, db)
-    if not track.audio_path:
-        raise HTTPException(status_code=422, detail="This track has no local audio file to analyze.")
-
-    audio_path = Path(__file__).resolve().parents[1] / track.audio_path
-    if not audio_path.exists():
-        raise HTTPException(status_code=404, detail="The track audio file is missing from storage.")
-
-    metadata = read_audio_metadata(audio_path)
-    metadata.update(analyze_audio_features(audio_path))
+    with materialize_track_audio(track, db) as audio_path:
+        metadata = read_audio_metadata(audio_path)
+        estimates = analyze_audio_features(audio_path)
+        metadata.update({key: value for key, value in estimates.items() if not metadata.get(key)})
     if not metadata.get("bpm") and not metadata.get("key"):
         raise HTTPException(status_code=422, detail="No BPM or musical-key data could be detected.")
 
-    persist_track_features(track, metadata, db, "local_audio")
+    persist_track_features(track, metadata, db, "audio_analysis")
     db.commit()
     db.refresh(track)
     return track
+
+
+@contextmanager
+def materialize_track_audio(track: Track, db: Session):
+    """Give analysis a bounded temporary file for cloud tracks, then remove it."""
+    if not track.audio_path:
+        raise HTTPException(status_code=422, detail="This track has no audio to analyze.")
+    if not track.audio_path.startswith(("gdrive://", "r2://")):
+        path = Path(__file__).resolve().parents[1] / track.audio_path
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="The audio file is missing from storage.")
+        yield path
+        return
+    upstream = transport = None
+    try:
+        if track.audio_path.startswith("gdrive://"):
+            token = _drive_token(db)
+            if not token:
+                raise HTTPException(status_code=409, detail="Reconnect Google Drive to analyze this song.")
+            upstream, transport = open_drive_stream(track.audio_path.removeprefix("gdrive://"), token)
+            if upstream.status_code != 200:
+                raise HTTPException(status_code=502, detail="Could not read the song from Google Drive.")
+            chunks = upstream.iter_content(chunk_size=64 * 1024)
+        else:
+            url = signed_url(track.audio_path.removeprefix("r2://"))
+            if not url:
+                raise HTTPException(status_code=503, detail="Audio storage is unavailable.")
+            upstream = urlopen(url, timeout=30)
+            chunks = iter(lambda: upstream.read(64 * 1024), b"")
+        suffix = Path(track.audio_filename or "").suffix or ".audio"
+        with TemporaryDirectory(prefix="ydkmusic-analysis-") as directory:
+            path = Path(directory) / ("source" + suffix)
+            total = 0
+            with path.open("wb") as output:
+                for chunk in chunks:
+                    total += len(chunk)
+                    if total > 100 * 1024 * 1024:
+                        raise HTTPException(status_code=413, detail="This audio file is too large to analyze.")
+                    output.write(chunk)
+            yield path
+    finally:
+        if upstream is not None:
+            upstream.close()
+        if transport is not None:
+            transport.close()
 
 
 @router.get("/listening/stats")
@@ -1992,6 +2041,7 @@ def _lrclib_match(track: Track) -> dict | None:
     artists = lyric_artist_candidates(artist)[:3] or [artist]
     duration = int(track.duration_seconds or 0)
     exact_plain = None
+    deadline = time.monotonic() + 18
 
     # YouTube imports often contain alternate title spellings or channel names.
     # Try a few metadata-normalized exact lookups before the broader search.
@@ -2000,6 +2050,8 @@ def _lrclib_match(track: Track) -> dict | None:
     exact_pairs.extend((titles[0], candidate_artist) for candidate_artist in artists[1:2])
     seen_pairs: set[tuple[str, str]] = set()
     for candidate_title, candidate_artist in exact_pairs:
+        if time.monotonic() >= deadline:
+            break
         pair = (normalize_lyric_text(candidate_title), normalize_lyric_text(candidate_artist))
         if pair in seen_pairs:
             continue
@@ -2022,6 +2074,8 @@ def _lrclib_match(track: Track) -> dict | None:
     ranked = []
     searched: set[str] = set()
     for search_query in search_queries:
+        if time.monotonic() >= deadline:
+            break
         normalized_query = normalize_lyric_text(search_query)
         if not normalized_query or normalized_query in searched:
             continue
@@ -2118,6 +2172,12 @@ def _lyrics_ovh_match(track: Track) -> str | None:
 def fetch_track_lyrics(track_id: int, db: DbSession) -> dict[str, object]:
     """Find timed lyrics first, then fall back to licensed Musixmatch when configured."""
     track = get_track_or_404(track_id, db)
+    if track.lyrics and track.lyrics.strip():
+        return {
+            "lyrics": track.lyrics, "source": "Your library",
+            "synced": bool(re.search(r"\[\d{1,2}:\d{2}(?:\.\d+)?\]", track.lyrics)),
+            "message": "Loaded saved lyrics.", "links": [],
+        }
     title = clean_imported_title(track.title, track.artist)
     artist = (track.artist or "").strip()
     query = f"{title} {artist}".strip()
@@ -2152,6 +2212,9 @@ def fetch_track_lyrics(track_id: int, db: DbSession) -> dict[str, object]:
             lyrics, source, synced = lyrics_ovh, "Lyrics.ovh", False
         elif lrclib_plain:
             lyrics, source = lrclib_plain, "LRCLIB"
+    if lyrics:
+        track.lyrics = lyrics
+        db.commit()
     return {
         "source": source,
         "synced": synced or bool(lyrics and re.search(r"\[\d{1,2}:\d{2}(?:\.\d+)?\]", lyrics)),
@@ -2182,7 +2245,7 @@ async def upload_track_cover(
     file: UploadFile = File(...),
 ) -> Track:
     track = get_track_or_404(track_id, db)
-    uploaded_cover = await save_cover_upload(file)
+    uploaded_cover = await save_cover_upload(file, db)
     remove_cover(track.cover_path)
     track.cover_filename = file.filename
     track.cover_path = uploaded_cover["path"]
@@ -2317,13 +2380,13 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
             ".ogg": "audio/ogg", ".opus": "audio/ogg", ".mp3": "audio/mpeg",
         }.get(downloaded_path.suffix.lower(), "application/octet-stream")
         metadata = read_audio_metadata(downloaded_path)
-        metadata.update(analyze_audio_features(downloaded_path))
+        metadata.update({key: value for key, value in analyze_audio_features(downloaded_path).items() if not metadata.get(key)})
         metadata["language"] = info.get("language") or info.get("original_language")
         known_artist = metadata.get("artist") or info.get("artist")
-        source_title = metadata.get("title") or title
+        source_title = metadata.get("title") or info.get("track") or title
         if not metadata.get("bpm") or not metadata.get("key"):
             try:
-                online_features = analyze_song(song=source_title, artist=known_artist)
+                online_features = lookup_candidate_features(source_title, known_artist or "")
                 if not metadata.get("bpm"):
                     metadata["bpm"] = online_features.get("bpm")
                 if not metadata.get("key"):
@@ -2337,18 +2400,18 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
             known_artist or catalog.get("artist") or info.get("uploader") or "Unknown artist"
         ).strip()
         final_title = clean_imported_title(
-            metadata.get("title") or catalog.get("title") or title,
+            metadata.get("title") or catalog.get("title") or source_title,
             final_artist,
         )
-        embedded_cover = extract_embedded_cover(downloaded_path)
+        embedded_cover = extract_embedded_cover(downloaded_path, db)
         remote_cover = embedded_cover
         if not remote_cover and catalog.get("cover_url"):
-            remote_cover = save_remote_cover(catalog["cover_url"])
+            remote_cover = save_remote_cover(catalog["cover_url"], db)
         if not remote_cover:
             # Catalog artwork is optional and can be unavailable for regional
             # or newly uploaded YouTube results. The source thumbnail is the
             # reliable final fallback for every YouTube import.
-            remote_cover = save_remote_cover(youtube_thumbnail(info))
+            remote_cover = save_remote_cover(youtube_thumbnail(info), db)
         ensure_unique_track(playlist.id, final_title, final_artist, db)
         stored_audio_path = store_audio_file(downloaded_path, audio_filename, audio_content_type, db, _playlist_drive_folder(playlist, db))
 
@@ -2428,11 +2491,7 @@ def create_director_cover(label: str) -> dict[str, str]:
 
 
 def lookup_director_candidate_features(title: str, artist: str) -> dict:
-    return {}
-
-
-def analyze_catalog_preview(url: str) -> dict:
-    return {}
+    return lookup_candidate_features(title, artist)
 
 
 def _director_key_ok(first: str | None, second: str | None) -> bool:

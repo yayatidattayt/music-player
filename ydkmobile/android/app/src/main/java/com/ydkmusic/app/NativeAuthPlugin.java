@@ -64,9 +64,6 @@ public final class NativeAuthPlugin extends Plugin {
             Uri uri = Uri.parse(API + "/api/auth/google/sign-in").buildUpon()
                     .appendQueryParameter("mobile_challenge", challenge).build();
             Intent browserIntent = new Intent(Intent.ACTION_VIEW, uri);
-            if (browserIntent.resolveActivity(getContext().getPackageManager()) == null) {
-                throw new IllegalStateException("No browser is available to open Google sign-in.");
-            }
             getActivity().startActivity(browserIntent);
             call.resolve();
         } catch (Exception error) {
