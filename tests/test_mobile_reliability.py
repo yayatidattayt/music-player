@@ -144,6 +144,24 @@ def test_import_rejects_untrusted_link(db):
     assert error.value.status_code == 422
 
 
+def test_abandoned_import_is_released_for_retry(db):
+    user = db.get(User, 1)
+    old_request = ImportRequest(query="Old song", playlist_id=1, request_id=uuid4())
+    job = start_import(old_request, BackgroundTasks(), user, db)
+    record = db.get(ImportJob, job["id"])
+    record.status = "running"
+    record.updated_at = datetime.now(timezone.utc) - timedelta(minutes=6)
+    db.commit()
+
+    result = start_import(
+        ImportRequest(query="New song", playlist_id=1, request_id=uuid4()),
+        BackgroundTasks(), user, db,
+    )
+    db.expire_all()
+    assert result["status"] == "queued"
+    assert import_status(job["id"], user, db)["status"] == "failed"
+
+
 def test_import_diagnostic_is_actionable_without_leaking_secrets():
     detail = "Failed to fetch audio: token=secret123 https://example.test/download?sig=secret456 No supported JavaScript runtime"
     safe = safe_import_diagnostic(detail)

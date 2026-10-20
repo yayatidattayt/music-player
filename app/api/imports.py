@@ -20,6 +20,7 @@ from .playlists import download_youtube_audio, get_playlist_or_404, search_youtu
 
 router = APIRouter(prefix="/imports", tags=["Imports"])
 logger = logging.getLogger(__name__)
+IMPORT_STALE_AFTER = timedelta(minutes=5)
 
 
 class ImportRequest(BaseModel):
@@ -45,6 +46,18 @@ def safe_import_diagnostic(detail: str) -> str:
         detail,
     )
     return " ".join(detail.split())[:240]
+
+
+def expire_stale_import(job: ImportJob) -> bool:
+    """Release a job abandoned by a host restart or an unresponsive worker."""
+    if job.status not in ("queued", "running"):
+        return False
+    updated = job.updated_at.replace(tzinfo=timezone.utc) if job.updated_at.tzinfo is None else job.updated_at
+    if updated >= datetime.now(timezone.utc) - IMPORT_STALE_AFTER:
+        return False
+    job.status = "failed"
+    job.message = "This import took too long and was interrupted. Try again, or upload an audio file."
+    return True
 
 
 def run_import(job_id: str):
@@ -106,10 +119,19 @@ def start_import(payload: ImportRequest, tasks: BackgroundTasks, user: User = De
     existing = db.scalar(select(ImportJob).where(ImportJob.user_id == user.id, ImportJob.request_id == str(payload.request_id)))
     if existing:
         return job_payload(existing)
-    active = db.scalar(select(ImportJob).where(
+    active_jobs = db.scalars(select(ImportJob).where(
         ImportJob.user_id == user.id, ImportJob.status.in_(["queued", "running"]),
-        ImportJob.created_at > datetime.now(timezone.utc) - timedelta(minutes=20),
-    ))
+    ).order_by(ImportJob.created_at.desc())).all()
+    active = None
+    expired_any = False
+    for candidate in active_jobs:
+        if expire_stale_import(candidate):
+            expired_any = True
+        else:
+            active = candidate
+            break
+    if expired_any:
+        db.commit()
     if active:
         raise HTTPException(status_code=409, detail="Your previous import is still running. Wait for it to finish.")
     job = ImportJob(id=uuid4().hex, user_id=user.id, playlist_id=payload.playlist_id,
@@ -132,8 +154,6 @@ def import_status(job_id: str, user: User = Depends(get_current_user), db: Sessi
     job = db.scalar(select(ImportJob).where(ImportJob.id == job_id, ImportJob.user_id == user.id))
     if not job:
         raise HTTPException(status_code=404, detail="Import not found.")
-    updated = job.updated_at.replace(tzinfo=timezone.utc) if job.updated_at.tzinfo is None else job.updated_at
-    if job.status in ("queued", "running") and updated < datetime.now(timezone.utc) - timedelta(minutes=20):
-        job.status, job.message = "failed", "Import was interrupted. Check your playlist before trying again."
+    if expire_stale_import(job):
         db.commit()
     return job_payload(job)
