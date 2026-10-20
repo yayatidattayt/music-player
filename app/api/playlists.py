@@ -1,6 +1,6 @@
 from pathlib import Path
 from datetime import datetime, timezone
-from tempfile import NamedTemporaryFile, TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory, gettempdir
 from typing import Annotated
 from uuid import uuid4
 from urllib.error import HTTPError, URLError
@@ -36,6 +36,7 @@ from starlette.concurrency import run_in_threadpool
 from mutagen import File as MutagenFile
 from dotenv import load_dotenv
 
+from .. import models, schemas
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -126,8 +127,10 @@ KNOWN_SONG_ANALYSIS = {
 DbSession = Annotated[Session, Depends(get_db)]
 UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
 cover_dir = UPLOAD_DIR / "covers"
+MUSIC_DIR = Path(__file__).resolve().parents[1] / "static" / "music"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 cover_dir.mkdir(parents=True, exist_ok=True)
+MUSIC_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_AUDIO_TYPES = {
     "audio/mpeg",
@@ -2343,9 +2346,9 @@ def youtube_ydl_options(**overrides) -> dict:
         "format": "bestaudio/best",
         "noplaylist": True,
         "socket_timeout": 30,
-        "retries": 10,
+        "retries": 5,
         "extractor_retries": 5,
-        "fragment_retries": 10,
+        "fragment_retries": 5,
         "noprogress": True,
         "quiet": True,
         "extractor_args": {
@@ -2365,14 +2368,25 @@ def youtube_ydl_options(**overrides) -> dict:
         },
         "nocheckcertificate": True,
     }
-    cookie_file = os.getenv("YOUTUBE_COOKIES_FILE", "").strip()
-    if cookie_file and Path(cookie_file).is_file():
+    cookie_file = get_cookiefile_path()
+    if cookie_file:
         options["cookiefile"] = cookie_file
-    proxy_url = os.getenv("YOUTUBE_PROXY_URL", "").strip()
+    proxy_url = os.getenv("PROXY_URL")
     if proxy_url:
         options["proxy"] = proxy_url
     options.update(overrides)
     return options
+
+
+def get_cookiefile_path() -> str | None:
+    cookie_content = os.getenv("YOUTUBE_COOKIES")
+    if cookie_content:
+        cookie_file = Path(gettempdir()) / "yt_cookies.txt"
+        cookie_file.write_text(cookie_content, encoding="utf-8")
+        return str(cookie_file)
+    if Path("cookies.txt").is_file():
+        return "cookies.txt"
+    return None
 
 
 def youtube_download_error(error: Exception) -> HTTPException | None:
@@ -2391,12 +2405,16 @@ def youtube_download_error(error: Exception) -> HTTPException | None:
     return None
 
 
-@router.post("/yt-download", response_model=TrackRead, status_code=status.HTTP_201_CREATED)
-def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
+@router.post("/yt-download", response_model=schemas.TrackRead, status_code=status.HTTP_201_CREATED)
+def download_youtube_audio(
+    req: schemas.YouTubeDownloadRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+) -> schemas.TrackRead:
     playlist = get_playlist_or_404(req.playlist_id, db)
 
     ydl_opts = youtube_ydl_options(
-        outtmpl=str(UPLOAD_DIR / f"{uuid4().hex}.%(ext)s"),
+        outtmpl=str(MUSIC_DIR / f"{uuid4().hex}.%(ext)s"),
         max_filesize=100 * 1024 * 1024,
     )
     # Leave yt-dlp's automatic runtime selection intact. Forcing Node here can
@@ -2413,7 +2431,7 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
             filename = ydl.prepare_filename(info)
             audio_filename = os.path.basename(filename)
 
-        downloaded_path = UPLOAD_DIR / audio_filename
+        downloaded_path = MUSIC_DIR / audio_filename
         if not downloaded_path.exists():
             raise HTTPException(status_code=502, detail="The audio download did not produce a file.")
 
