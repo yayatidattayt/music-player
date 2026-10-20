@@ -28,6 +28,12 @@ button:disabled { cursor: wait; opacity: .55; }
 .toast { max-width: min(480px, calc(100vw - 32px)); overflow-wrap: anywhere; }
 .mobile-navigation, .library-shade { display: none; }
 .dock-next { font-size: 29px; line-height: 1; }
+.app-shell .sidebar { display: flex; flex-direction: column; }
+.app-shell .sidebar > * { flex-shrink: 0; }
+.app-shell .brand { margin-bottom: 20px; }
+.app-shell .search-box { min-height: 42px; }
+.app-shell .playlist-list { flex: 1 1 0; min-height: 0; max-height: none; margin-block: 12px 0; overflow: auto; }
+.app-shell .sidebar-footer { flex: 0 0 auto; min-height: 42px; margin-top: auto; }
 .connection-banner {
   position: fixed; z-index: 1000; top: env(safe-area-inset-top, 0px);
   inset-inline: 0; padding: 10px 20px; text-align: center;
@@ -163,6 +169,77 @@ body.auth-mode .import-notice { display: none; }
     overscroll-behavior-y: contain;
   }
   body.auth-mode .auth-card { width: 100%; max-width: 480px; min-height: 0; }
+}
+
+@media (max-width: 700px) {
+  .app-shell .playlist-link { min-height: 52px; padding: 8px; }
+  .app-shell .liked-songs-button, .app-shell .sidebar-tool-button { min-height: 48px; }
+  .app-shell .sidebar-tool-button { padding-block: 9px; }
+  .mobile-navigation button { min-height: 48px; }
+  .yt-fetch-card { gap: 15px; padding: 16px; }
+  .yt-fetch-row { gap: 10px; }
+  .yt-fetch-actions { align-items: flex-start; }
+  .yt-search-btn { min-height: 44px; padding-inline: 5px; text-align: left; }
+  .dialog-form { gap: 13px; }
+  .dialog-form input:not([type="checkbox"]):not([type="radio"]), .dialog-form select { min-height: 46px; }
+  .track-row { min-height: 72px; }
+  .track-actions button { min-width: 44px; min-height: 44px; }
+  .now-playing-controls button, .now-playing-actions button { min-width: 44px; min-height: 44px; }
+  .lyrics-heading-actions button, .lyrics-timing button { min-height: 40px; }
+  body .player-bar, body.sidebar-collapsed .player-bar {
+    inset: auto 10px calc(var(--mobile-nav-height) + 8px) !important;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 42px 42px;
+    grid-template-rows: 1fr;
+    grid-template-areas: "song lyrics play";
+    gap: 6px;
+    height: 66px;
+    min-height: 66px;
+    padding: 8px 10px 10px;
+    border-radius: 17px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.3);
+  }
+  .player-controls, .player-options { display: contents; }
+  .player-song { grid-area: song; gap: 10px; min-width: 0; }
+  .player-art { width: 46px; height: 46px; flex: 0 0 46px; border-radius: 9px; }
+  .player-song-copy strong, .player-song-copy span { max-width: 100%; }
+  .player-song-copy strong { font-size: 13px; }
+  .player-song-copy span { font-size: 11px; }
+  #player-play { grid-area: play; width: 40px; height: 40px; min-height: 40px; justify-self: center; border-radius: 50%; }
+  #player-lyrics { grid-area: lyrics; width: 38px; min-height: 40px; justify-self: center; color: var(--art-accent-soft, #d7e9a0); }
+  #player-shuffle, #player-current-time, #player-total-time, #player-mute, #equalizer-toggle, #player-volume, #player-volume-value, #player-repeat { display: none !important; }
+  #player-progress-wrap { position: absolute; inset: auto 10px 0; height: 2px; }
+  #player-progress { position: absolute; inset: 0; width: 100%; height: 2px; margin: 0; accent-color: var(--art-accent-soft, #d7e9a0); }
+  .player-mini-wave { display: none; }
+  .now-playing.has-lyrics-open .lyrics-panel {
+    inset: calc(66px + env(safe-area-inset-top, 0px)) 10px calc(16px + env(safe-area-inset-bottom, 0px));
+    padding: 17px 15px;
+    border-radius: 22px;
+  }
+  .now-playing.has-lyrics-open .lyrics-heading { align-items: center; }
+  .now-playing.has-lyrics-open .lyrics-heading-actions { gap: 5px; }
+  .now-playing.has-lyrics-open .lyrics-heading-actions .lyrics-edit { padding: 7px 9px; font-size: 11px; }
+  .now-playing.has-lyrics-open .lyrics-heading h2 { font-size: 1.45rem; }
+  .now-playing.has-lyrics-open .lyrics-timing { display: flex; flex-wrap: wrap; gap: 7px; }
+  .now-playing.has-lyrics-open .lyrics-view { padding: 12vh 3% 14vh; }
+  .now-playing.has-lyrics-open .lyrics-view p { margin-bottom: 15px; font-size: clamp(1.1rem, 5.5vw, 1.55rem); }
+  .now-playing.has-lyrics-open .lyrics-view p.is-current { font-size: clamp(1.35rem, 6.4vw, 1.9rem); }
+  body .app-shell .sidebar {
+    box-sizing: border-box;
+    padding-top: calc(22px + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  }
+  .app-shell .brand { min-height: 42px; margin: 0 0 20px; }
+  .app-shell .playlist-list {
+    display: grid;
+    flex: 1 1 0;
+    min-height: 0;
+    max-height: none;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .app-shell .sidebar-footer { flex: 0 0 auto; min-height: 42px; margin-top: auto; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }

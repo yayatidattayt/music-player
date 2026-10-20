@@ -1975,20 +1975,135 @@ def lyric_artist_candidates(value: str) -> list[str]:
     return unique_lyric_candidates(variants)
 
 
+def _lyrics_json(url: str) -> object:
+    request = Request(url, headers={"Accept": "application/json", "User-Agent": "YDKMusic/1.5 lyrics lookup"})
+    with urlopen(request, timeout=5) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _lrclib_match(track: Track) -> dict | None:
+    title = clean_imported_title(track.title, track.artist)
+    artist = (track.artist or "").strip()
+    query = {"track_name": title, "artist_name": artist}
+    if track.album:
+        query["album_name"] = track.album
+    duration = int(track.duration_seconds or 0)
+    if 1 <= duration <= 3600:
+        query["duration"] = duration
+    exact_plain = None
+    try:
+        exact = _lyrics_json("https://lrclib.net/api/get?" + urlencode(query))
+        if isinstance(exact, dict) and exact.get("syncedLyrics"):
+            return exact
+        if isinstance(exact, dict) and exact.get("plainLyrics"):
+            exact_plain = exact
+    except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
+        pass
+
+    try:
+        results = _lyrics_json("https://lrclib.net/api/search?" + urlencode({"q": f"{title} {artist}"}))
+    except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
+        return exact_plain
+    if not isinstance(results, list):
+        return None
+    wanted_title = normalize_lyric_text(title)
+    wanted_artist = normalize_lyric_text(artist)
+    ranked = []
+    for item in results:
+        if not isinstance(item, dict) or not (item.get("syncedLyrics") or item.get("plainLyrics")):
+            continue
+        result_title = normalize_lyric_text(item.get("trackName"))
+        result_artist = normalize_lyric_text(item.get("artistName"))
+        title_score = SequenceMatcher(None, wanted_title, result_title).ratio()
+        artist_score = SequenceMatcher(None, wanted_artist, result_artist).ratio() if wanted_artist else 1.0
+        if title_score < .72 or artist_score < .55:
+            continue
+        result_duration = float(item.get("duration") or 0)
+        duration_penalty = min(abs(result_duration - duration) / max(duration, 1), 1) if duration else 0
+        ranked.append((title_score * .55 + artist_score * .4 - duration_penalty * .2 + bool(item.get("syncedLyrics")) * .08, item))
+    return max(ranked, key=lambda pair: pair[0])[1] if ranked else exact_plain
+
+
+def _musixmatch_match(track: Track) -> tuple[str | None, str | None]:
+    api_key = os.getenv("MUSIXMATCH_API_KEY", "").strip()
+    if not api_key:
+        return None, None
+    common = {"apikey": api_key, "q_track": clean_imported_title(track.title, track.artist), "q_artist": track.artist}
+    duration = int(track.duration_seconds or 0)
+    if 1 <= duration <= 3600:
+        common["f_subtitle_length"] = duration
+        common["f_subtitle_length_max_deviation"] = 8
+    try:
+        subtitle = _lyrics_json("https://api.musixmatch.com/ws/1.1/matcher.subtitle.get?" + urlencode(common))
+        body = subtitle.get("message", {}).get("body", {}).get("subtitle", {}) if isinstance(subtitle, dict) else {}
+        raw = str(body.get("subtitle_body") or "").strip()
+        if raw:
+            try:
+                lines = json.loads(raw)
+                if isinstance(lines, list):
+                    lrc = []
+                    for line in lines:
+                        timing = line.get("time") or {}
+                        seconds = float(timing.get("total") or 0)
+                        minutes, remainder = divmod(max(0, seconds), 60)
+                        text = str(line.get("text") or "").strip()
+                        if text:
+                            lrc.append(f"[{int(minutes):02d}:{remainder:05.2f}] {text}")
+                    raw = "\n".join(lrc)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+            return raw, "Musixmatch"
+    except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError, AttributeError):
+        pass
+
+    try:
+        lyrics = _lyrics_json("https://api.musixmatch.com/ws/1.1/matcher.lyrics.get?" + urlencode({"apikey": api_key, **common}))
+        body = lyrics.get("message", {}).get("body", {}).get("lyrics", {}) if isinstance(lyrics, dict) else {}
+        raw = str(body.get("lyrics_body") or "").strip()
+        return (raw, "Musixmatch") if raw else (None, None)
+    except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError, AttributeError):
+        return None, None
+
+
 @router.get("/tracks/{track_id}/lyrics")
 def fetch_track_lyrics(track_id: int, db: DbSession) -> dict[str, object]:
-    """Return licensed-provider search links without copying lyric text."""
+    """Find timed lyrics first, then fall back to licensed Musixmatch when configured."""
     track = get_track_or_404(track_id, db)
     title = clean_imported_title(track.title, track.artist)
     artist = track.artist.strip()
-    query = quote(f"{title} {artist}")
+    query = f"{title} {artist}".strip()
+    quoted = quote(query)
+    lrclib = None
+    try:
+        lrclib = _lrclib_match(track)
+    except Exception:
+        # A lyric provider outage must never interrupt playback.
+        pass
+    lrclib_synced = str(lrclib.get("syncedLyrics") or "").strip() if lrclib else ""
+    lrclib_plain = str(lrclib.get("plainLyrics") or "").strip() if lrclib else ""
+    lyrics = lrclib_synced or None
+    source = "LRCLIB" if lyrics else None
+    synced = bool(lyrics)
+    # If LRCLIB only has plain text, still check licensed Musixmatch for a
+    # timed version before falling back to the untimed result.
+    if not synced:
+        musixmatch_lyrics, musixmatch_source = _musixmatch_match(track)
+        musixmatch_synced = bool(musixmatch_lyrics and re.search(r"\[\d{1,2}:\d{2}(?:\.\d+)?\]", musixmatch_lyrics))
+        if musixmatch_lyrics and (musixmatch_synced or not lrclib_plain):
+            lyrics, source, synced = musixmatch_lyrics, musixmatch_source, musixmatch_synced
+        elif lrclib_plain:
+            lyrics, source = lrclib_plain, "LRCLIB"
     return {
-        "source": "Licensed lyric provider search",
-        "lyrics": None,
-        "message": "Open a licensed provider to view lyrics, or paste lyrics you are authorized to use.",
+        "source": source,
+        "synced": synced or bool(lyrics and re.search(r"\[\d{1,2}:\d{2}(?:\.\d+)?\]", lyrics)),
+        "lyrics": lyrics,
+        "message": f"Lyrics loaded from {source}." if lyrics else "No automatic match found. Try a source below or add your own lyrics.",
         "links": [
-            {"name": "Musixmatch", "url": f"https://www.musixmatch.com/search/{query}"},
-            {"name": "Genius", "url": f"https://genius.com/search?q={query}"},
+            {"name": "LRCLIB", "url": f"https://lrclib.net/search?q={quoted}"},
+            {"name": "Musixmatch", "url": f"https://www.musixmatch.com/search/{quoted}"},
+            {"name": "Genius", "url": f"https://genius.com/search?q={quoted}"},
+            {"name": "Lyrics.com", "url": f"https://www.lyrics.com/serp.php?st={quote(title)}&qtype=1"},
+            {"name": "Web search", "url": f"https://www.google.com/search?q={quote(query + ' lyrics')}"},
         ],
     }
 
@@ -2101,17 +2216,21 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
         # Preserve the source audio. Android and modern browsers play these
         # containers directly; unconditional MP3 conversion fails on hosts
         # without FFmpeg and wastes CPU on the free backend.
-        'format': 'bestaudio',
+        'format': 'bestaudio/best',
         'noplaylist': True,
         'socket_timeout': 30,
-        'retries': 2,
-        'fragment_retries': 2,
+        'retries': 3,
+        'extractor_retries': 3,
+        'fragment_retries': 5,
         'noprogress': True,
         'outtmpl': str(UPLOAD_DIR / f"{uuid4().hex}.%(ext)s"),
         'quiet': True,
-        'js_runtimes': {'node': {}},
         'max_filesize': 100 * 1024 * 1024,
     }
+    # yt-dlp's default JS runtime (Deno) remains available where Node is not
+    # installed; explicitly enable Node when the host provides it.
+    if shutil.which("node"):
+        ydl_opts['js_runtimes'] = {'node': {}}
     bundled_ffmpeg = UPLOAD_DIR.parent.parent / "ffmpeg.exe"
     ffmpeg_location = find_ffmpeg() or (str(bundled_ffmpeg) if bundled_ffmpeg.exists() else None)
     if ffmpeg_location:

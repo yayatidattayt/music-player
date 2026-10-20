@@ -483,6 +483,43 @@ a { color: inherit; }
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 
+/* Stable sidebar rhythm: the playlist area absorbs spare height so the footer
+   stays inside the rail, even with an empty or very large library. */
+.app-shell .sidebar {
+  box-sizing: border-box;
+  padding: 20px 16px 14px;
+}
+.app-shell .sidebar > * { flex-shrink: 0; }
+.app-shell .brand {
+  min-height: 44px;
+  align-items: center;
+  margin: 0 0 22px 4px;
+}
+.app-shell .library-heading { min-height: 34px; padding: 0 4px 8px; }
+.app-shell .search-box { margin-bottom: 9px; }
+.app-shell .liked-songs-button { min-height: 42px; margin-block: 3px; }
+.app-shell .sidebar-tool-button { min-height: 48px; margin-top: 7px; }
+.app-shell .playlist-list {
+  flex: 1 1 0;
+  min-height: 0;
+  margin-block: 14px 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.app-shell .sidebar-footer {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: 100%;
+  min-height: 42px;
+  margin: 12px 0 0;
+  padding: 10px 4px 2px;
+}
+
+.lyrics-source { margin: 6px 0 0; color: var(--quiet); font-size: .72rem; letter-spacing: .04em; }
+.lyrics-source-links { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.lyrics-source-links a { padding: 8px 11px; border: 1px solid var(--line-soft); border-radius: 999px; color: var(--muted); font-size: .78rem; text-decoration: none; }
+.lyrics-source-links a:hover { border-color: var(--art-accent-soft, var(--accent)); color: var(--text); }
+
 /* Larger shared player controls */
 .player-bar {
   min-height: 96px;
@@ -1845,6 +1882,57 @@ body,
 .lyrics-editor { height: calc(100% - 54px); margin-top: 18px; }
 .lyrics-editor textarea { width: 100%; height: calc(100% - 52px); resize: none; border: 1px solid rgba(255,255,255,.12); border-radius: 13px; padding: 14px; background: rgba(0,0,0,.2); color: var(--text); line-height: 1.55; }
 .lyrics-editor-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+
+/* Focus mode gives lyrics a dedicated, readable surface inside Now Playing. */
+.now-playing.has-lyrics-open .now-playing-content { opacity: 0; pointer-events: none; }
+.now-playing.has-lyrics-open .lyrics-panel {
+  position: absolute;
+  inset: 76px clamp(18px, 5vw, 76px) 24px;
+  z-index: 8;
+  display: grid;
+  width: auto;
+  height: auto;
+  max-height: none;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  gap: 10px;
+  padding: clamp(18px, 3vw, 34px);
+  border-color: rgba(255,255,255,.12);
+  border-radius: 26px;
+  background: linear-gradient(145deg, rgba(35,42,31,.9), rgba(12,16,13,.88));
+  box-shadow: 0 24px 90px rgba(0,0,0,.28);
+}
+.now-playing.has-lyrics-open .lyrics-heading h2 { font-size: clamp(1.6rem, 3vw, 2.3rem); }
+.now-playing.has-lyrics-open .lyrics-heading-actions { align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.now-playing.has-lyrics-open .lyrics-view {
+  display: flex;
+  height: auto;
+  min-height: 0;
+  flex-direction: column;
+  justify-content: center;
+  margin: 0;
+  padding: 18vh 8% 20vh;
+  mask-image: linear-gradient(transparent, #000 18%, #000 82%, transparent);
+  text-align: center;
+}
+.now-playing.has-lyrics-open .lyrics-view { grid-row: 3; }
+.now-playing.has-lyrics-open .lyrics-source { grid-row: 4; }
+.now-playing.has-lyrics-open .lyrics-source-links { grid-row: 5; }
+.now-playing.has-lyrics-open .lyrics-editor { grid-row: 3 / 6; min-height: 0; height: auto; margin: 0; }
+.now-playing.has-lyrics-open .lyrics-view p {
+  margin: 0 auto 18px;
+  color: rgba(245,246,237,.48);
+  font-size: clamp(1.15rem, 2.5vw, 2rem);
+  font-weight: 650;
+  line-height: 1.45;
+  transition: color .25s ease, transform .25s ease, opacity .25s ease;
+}
+.now-playing.has-lyrics-open .lyrics-view p.is-current {
+  color: var(--text);
+  font-size: clamp(1.35rem, 3.1vw, 2.45rem);
+  transform: scale(1.025);
+}
+.now-playing.has-lyrics-open .lyrics-view .lyrics-empty { padding-top: 0; }
+.player-lyrics-button { font-size: 19px; }
 
 @media (max-width: 1199px) {
   .lyrics-panel { right: 18px; width: min(300px, 32vw); }

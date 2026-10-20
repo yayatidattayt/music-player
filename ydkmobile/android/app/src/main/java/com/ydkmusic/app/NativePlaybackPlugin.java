@@ -1,6 +1,7 @@
 package com.ydkmusic.app;
 
 import android.content.ComponentName;
+import android.util.Base64;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -119,6 +120,7 @@ public final class NativePlaybackPlugin extends Plugin {
                             call.getString("artist", "Unknown artist"),
                             call.getString("album", "YDKMusic"),
                             call.getString("artworkUrl"),
+                            call.getString("artworkData"),
                             ""
                     ));
                 }
@@ -129,6 +131,7 @@ public final class NativePlaybackPlugin extends Plugin {
                         call.getString("artist", "Unknown artist"),
                         call.getString("album", "YDKMusic"),
                         call.getString("artworkUrl"),
+                        call.getString("artworkData"),
                         ""
                 ));
             }
@@ -248,6 +251,7 @@ public final class NativePlaybackPlugin extends Plugin {
             String artist,
             String album,
             @Nullable String artworkUrl,
+            @Nullable String artworkData,
             String mediaId
     ) {
         MediaMetadata metadata = new MediaMetadata.Builder()
@@ -256,6 +260,19 @@ public final class NativePlaybackPlugin extends Plugin {
                 .setAlbumTitle(album)
                 .setArtworkUri(toUri(artworkUrl))
                 .build();
+        if (artworkData != null && !artworkData.isEmpty()) {
+            try {
+                metadata = new MediaMetadata.Builder()
+                        .setTitle(title)
+                        .setArtist(artist)
+                        .setAlbumTitle(album)
+                        .setArtworkUri(toUri(artworkUrl))
+                        .setArtworkData(Base64.decode(artworkData, Base64.DEFAULT))
+                        .build();
+            } catch (IllegalArgumentException ignored) {
+                // The artwork URI remains a system-readable fallback.
+            }
+        }
         return new MediaItem.Builder()
                 .setMediaId(mediaId == null ? "" : mediaId)
                 .setUri(url)
@@ -276,6 +293,7 @@ public final class NativePlaybackPlugin extends Plugin {
                         item.optString("artist", "Unknown artist"),
                         item.optString("album", "YDKMusic"),
                         item.optString("artworkUrl", ""),
+                        item.optString("artworkData", ""),
                         item.optString("id", "")
                 ));
             } catch (JSONException ignored) {

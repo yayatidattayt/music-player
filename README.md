@@ -50,6 +50,10 @@ R2_REGION=auto
 
 When all five values are present, new audio is uploaded to R2 and the temporary local copy is removed. Playback uses short-lived signed URLs. If R2 is not configured, the app keeps using its local-storage fallback so an offline/local setup still works. Existing local tracks are not migrated automatically.
 
+### Lyrics lookup
+
+The player checks LRCLIB for synced lyrics first and saves a successful match to the track. To enable Musixmatch as an additional automatic source, set `MUSIXMATCH_API_KEY` in `.env` for local use or in the Render service environment. When no automatic match is available, the lyrics view offers direct LRCLIB, Musixmatch, and Genius searches.
+
 ### Online deployment with Render
 
 The repository includes `render.yaml` for a basic Render deployment. It creates a web service and a PostgreSQL database. To deploy:
@@ -57,7 +61,7 @@ The repository includes `render.yaml` for a basic Render deployment. It creates 
 1. Push this repository to GitHub.
 2. In Render, choose **New → Blueprint** and select the repository.
 3. Review the `ydkmusic` web service and `ydkmusic-db` PostgreSQL database.
-4. Add the R2 secrets under the web service environment variables: `R2_ENDPOINT_URL`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_BUCKET`.
+4. Add the R2 secrets under the web service environment variables: `R2_ENDPOINT_URL`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_BUCKET`. Add `MUSIXMATCH_API_KEY` if you want Musixmatch automatic lyrics lookup.
 5. Deploy and open the generated `onrender.com` URL.
 
 The service uses `DATABASE_URL` from the managed PostgreSQL database. Do not upload the local SQLite database, `.env` file, passwords, or API keys to GitHub. R2 should be configured before importing audio because hosted web-service filesystems are not a permanent place for user media.

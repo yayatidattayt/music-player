@@ -17,6 +17,8 @@ services:
         value: https://ydkmusic.onrender.com/api/auth/google-drive/callback
       - key: GOOGLE_DRIVE_FOLDER_ID
         sync: false
+      - key: MUSIXMATCH_API_KEY
+        sync: false
       - key: CORS_ORIGINS
         value: https://localhost,capacitor://localhost
       - key: COOKIE_SAMESITE
