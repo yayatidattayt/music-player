@@ -15,7 +15,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, migrate_schema
 from app.models import AuthSession, GoogleDriveConnection, ImportJob, MobileLoginCode, Playlist, User
-from app.api.auth import MobileLoginRequest, complete_mobile_login, google_drive_callback, token_digest
+from app.api.auth import MobileLoginRequest, complete_mobile_login, google_drive_callback, google_drive_status, token_digest
 from app.api.imports import ImportRequest, import_status, run_import, start_import
 from app.api.playlists import redirect_cover_file, stream_drive_media
 
@@ -94,6 +94,17 @@ def test_google_callback_survives_drive_failure_and_preserves_refresh(db, mobile
         assert response.status_code == 303
         assert response.headers["location"] == "/"
         assert db.scalar(select(AuthSession)) is not None
+
+
+def test_google_drive_status_retries_folder_setup(db):
+    user = db.get(User, 1)
+    db.add(GoogleDriveConnection(user_id=user.id, google_email=user.email, token_json="{}"))
+    db.commit()
+    with patch("app.api.auth.get_current_user", return_value=user), \
+         patch("app.storage.ensure_drive_folder", return_value="drive-folder") as ensure_folder:
+        result = google_drive_status(Request({"type": "http"}), db)
+    ensure_folder.assert_called_once_with("{}", "YDKMusic")
+    assert result == {"connected": True, "sync_ready": True, "google_email": user.email}
 
 
 def test_migration_keeps_all_playlist_columns():

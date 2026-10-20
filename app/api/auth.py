@@ -481,7 +481,20 @@ def complete_mobile_login(payload: MobileLoginRequest, response: Response, db: S
 def google_drive_status(request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     user = get_current_user(request, db)
     connection = db.scalar(select(GoogleDriveConnection).where(GoogleDriveConnection.user_id == user.id))
-    return {"connected": connection is not None, "google_email": connection.google_email if connection else None}
+    if connection and not connection.drive_folder_id:
+        try:
+            from ..storage import ensure_drive_folder
+
+            connection.drive_folder_id = ensure_drive_folder(connection.token_json, "YDKMusic")
+            db.commit()
+        except Exception:
+            db.rollback()
+            connection = db.scalar(select(GoogleDriveConnection).where(GoogleDriveConnection.user_id == user.id))
+    return {
+        "connected": connection is not None,
+        "sync_ready": bool(connection and connection.drive_folder_id),
+        "google_email": connection.google_email if connection else None,
+    }
 
 
 @router.delete("/google-drive")

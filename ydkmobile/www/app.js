@@ -557,9 +557,17 @@ function renderProfile() {
   fetch(apiUrl("/api/auth/google-drive/status"), { credentials: configuredApiBase ? "include" : "same-origin" }).then((response) => response.json()).then((drive) => {
     const status = byId("google-drive-status");
     const button = byId("google-drive-connect");
+    const help = byId("google-drive-help");
     if (!status || !button) return;
-    status.textContent = drive.connected ? `Connected${drive.google_email ? ` · ${drive.google_email}` : ""}` : "Not connected";
-    button.textContent = drive.connected ? "Reconnect Google Drive" : "Connect Google Drive";
+    status.textContent = drive.sync_ready
+      ? `Sync ready${drive.google_email ? ` · ${drive.google_email}` : ""}`
+      : drive.connected ? "Google connected · sync setup pending" : "Not connected";
+    if (help) help.textContent = drive.sync_ready
+      ? "New music and artwork are saved to your Google Drive and stay available across devices."
+      : drive.connected
+        ? "Google sign-in worked, but Drive setup needs a retry. Connect again to finish cloud sync."
+        : "Connect Google Drive to keep your music available across devices.";
+    button.textContent = drive.connected && drive.sync_ready ? "Reconnect Google Drive" : drive.connected ? "Retry Drive setup" : "Connect Google Drive";
   }).catch(() => {});
   byId("profile-back").addEventListener("click", () => setProfileOpen(false));
 }
@@ -4425,8 +4433,24 @@ async function startGoogleSignIn() {
   }
 }
 window.Capacitor?.Plugins?.NativeAuth?.addListener("loginComplete", async (result) => {
-  if (result.success) { window.location.reload(); }
-  else setAuthStatus(result.message, "is-error");
+  if (!result.success) {
+    setAuthStatus(result.message || "Google sign-in could not finish. Please try again.", "is-error");
+    return;
+  }
+  setAuthStatus("Google sign-in complete. Opening your library…");
+  try {
+    const response = await fetch(apiUrl("/api/auth/me"), {
+      credentials: configuredApiBase ? "include" : "same-origin",
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.authenticated || !payload.user) {
+      throw new Error("Google signed you in, but the app could not restore your session. Please try once more.");
+    }
+    startAuthenticatedApp(payload.user);
+  } catch (error) {
+    setAuthStatus(error.message || "Google signed in, but your library could not reconnect. Check your connection and try again.", "is-error");
+  }
 });
 byId("google-signin-button")?.addEventListener("click", startGoogleSignIn);
 byId("auth-login-form").addEventListener("submit", (event) => submitAuth("login", event));
