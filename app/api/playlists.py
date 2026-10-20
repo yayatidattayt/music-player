@@ -2290,10 +2290,8 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
         'quiet': True,
         'max_filesize': 100 * 1024 * 1024,
     }
-    # yt-dlp's default JS runtime (Deno) remains available where Node is not
-    # installed; explicitly enable Node when the host provides it.
-    if shutil.which("node"):
-        ydl_opts['js_runtimes'] = {'node': {}}
+    # Leave yt-dlp's automatic runtime selection intact. Forcing Node here can
+    # suppress its default Deno runtime on hosts with an older Node install.
     bundled_ffmpeg = UPLOAD_DIR.parent.parent / "ffmpeg.exe"
     ffmpeg_location = find_ffmpeg() or (str(bundled_ffmpeg) if bundled_ffmpeg.exists() else None)
     if ffmpeg_location:

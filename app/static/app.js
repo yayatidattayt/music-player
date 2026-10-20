@@ -45,6 +45,7 @@ const state = {
   nowPlayingClosing: false,
   syncedLyricLine: null,
   lyricScrollFrame: null,
+  lyricManualScrollUntil: 0,
   lyricRenderKey: "",
   lyricOffset: 0,
   lyricManualOffset: 0,
@@ -1954,7 +1955,9 @@ function updateNowPlayingDisplay() {
   state.nowPlayingClosing = false;
   nowPlaying.classList.remove("is-closing");
   nowPlaying.hidden = false;
-  requestAnimationFrame(() => nowPlaying.classList.add("is-open"));
+  requestAnimationFrame(() => {
+    if (!state.nowPlayingClosing && !nowPlaying.hidden) nowPlaying.classList.add("is-open");
+  });
   const nowPlayingArt = byId("now-playing-art");
   const nowPlayingBackdrop = byId("now-playing-backdrop");
   const cover = playerTrack.cover_url || state.activePlaylist?.cover_url || "";
@@ -2072,7 +2075,16 @@ async function loadTrackLyrics({ notify = false } = {}) {
       const fallbackLinks = [
         ["LRCLIB", `https://lrclib.net/search?q=${encoded}`],
         ["Musixmatch", `https://www.musixmatch.com/search/${encoded}`],
+        ["Lyrics.ovh", `https://lyrics.ovh/${encodeURIComponent(playerTrack.artist || "")}/${encodeURIComponent(playerTrack.title || "")}`],
         ["Genius", `https://genius.com/search?q=${encoded}`],
+        ["AZLyrics", `https://search.azlyrics.com/search.php?q=${encoded}`],
+        ["Paroles.net", `https://www.paroles.net/search?q=${encoded}`],
+        ["Letras.mus.br", `https://www.letras.mus.br/?q=${encoded}`],
+        ["LyricsMania", `https://www.lyricsmania.com/search.html?query=${encoded}`],
+        ["SongLyrics", `https://www.songlyrics.com/index.php?section=search&searchW=${encoded}`],
+        ["LyricsTranslate", `https://lyricstranslate.com/en/search?query=${encoded}`],
+        ["Lyrics.com", `https://www.lyrics.com/serp.php?st=${encoded}`],
+        ["YouTube", `https://www.youtube.com/results?search_query=${encodeURIComponent(`${query} lyrics`)}`],
         ["Web search", `https://www.google.com/search?q=${encodeURIComponent(`${query} lyrics`)}`],
       ];
       const links = byId("lyrics-source-links");
@@ -2088,14 +2100,15 @@ async function loadTrackLyrics({ notify = false } = {}) {
       if (notify) showToast(error.message || "Could not search lyric sources.", true);
     }
   } finally {
-    if (state.lyricLoadingTrackId === requestedTrackId) {
+    const ownsLoadingState = state.lyricLoadingTrackId === requestedTrackId;
+    if (ownsLoadingState) {
       state.lyricLoadingTrackId = null;
       if (playerTrack?.id === requestedTrackId && !playerTrack.lyrics) {
         state.lyricRenderKey = "";
         renderLyrics();
       }
     }
-    if (button) { button.disabled = false; button.textContent = "Find lyrics"; }
+    if (button && ownsLoadingState) { button.disabled = false; button.textContent = "Find lyrics"; }
   }
 }
 
@@ -2183,10 +2196,13 @@ function syncLyrics() {
   const changed = state.syncedLyricLine !== current;
   lines.forEach((line) => line.classList.toggle("is-current", line === current));
   state.syncedLyricLine = current;
-  if (changed && current && !byId("lyrics-panel").hidden) {
+  if (changed && current && !byId("lyrics-panel").hidden
+      && performance.now() >= state.lyricManualScrollUntil) {
     const view = byId("lyrics-view");
-    const lineTop = current.offsetTop;
-    const lineBottom = lineTop + current.offsetHeight;
+    const viewBounds = view.getBoundingClientRect();
+    const lineBounds = current.getBoundingClientRect();
+    const lineTop = view.scrollTop + lineBounds.top - viewBounds.top;
+    const lineBottom = view.scrollTop + lineBounds.bottom - viewBounds.top;
     const visibleTop = view.scrollTop + view.clientHeight * 0.2;
     const visibleBottom = view.scrollTop + view.clientHeight * 0.8;
     if (lineTop < visibleTop || lineBottom > visibleBottom) {
@@ -4260,10 +4276,28 @@ byId("lyrics-toggle").addEventListener("click", () => {
   byId("now-playing").classList.toggle("has-lyrics-open", !isOpen);
   byId("lyrics-toggle").setAttribute("aria-expanded", String(!isOpen));
   if (!isOpen) {
+    // The active line may not have changed while the panel was closed. Reset
+    // its marker so opening lyrics recenters the currently playing line.
+    state.syncedLyricLine = null;
     syncLyrics();
     if (playerTrack?.id > 0 && !String(playerTrack.lyrics || "").trim()) void loadTrackLyrics();
   }
 });
+
+const lyricsView = byId("lyrics-view");
+if (lyricsView) {
+  const pauseLyricAutoFollow = () => {
+    state.lyricManualScrollUntil = performance.now() + 5000;
+    if (state.lyricScrollFrame) cancelAnimationFrame(state.lyricScrollFrame);
+    state.lyricScrollFrame = null;
+  };
+  lyricsView.addEventListener("wheel", pauseLyricAutoFollow, { passive: true });
+  lyricsView.addEventListener("touchstart", pauseLyricAutoFollow, { passive: true });
+  lyricsView.addEventListener("pointerdown", pauseLyricAutoFollow, { passive: true });
+  lyricsView.addEventListener("keydown", (event) => {
+    if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) pauseLyricAutoFollow();
+  });
+}
 
 byId("lyrics-close").addEventListener("click", closeLyricsPanel);
 

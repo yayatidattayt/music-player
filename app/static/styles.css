@@ -5889,87 +5889,6 @@ body.is-audio-playing .player-mini-wave i { animation-play-state: running; }
   to { transform: rotate(360deg) scale(calc(1 + (var(--cover-pulse, 0) * .022))); }
 }
 
-/* Lyrics-open desktop layout: reserve the drawer's column and reflow the
-   artwork plus playback controls into the remaining space. */
-@media (min-width: 1001px) {
-  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-content {
-    width: calc(100% - min(410px, 34vw) - 5vw) !important;
-    margin-left: 3vw !important;
-    margin-right: calc(min(410px, 34vw) + 2vw) !important;
-    grid-template-columns: minmax(260px, 420px) minmax(320px, 1fr) !important;
-    column-gap: clamp(28px, 4vw, 58px) !important;
-    transform: none !important;
-  }
-  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-art-stage {
-    width: min(420px, 100%) !important;
-    height: auto !important;
-    aspect-ratio: 1 / 1 !important;
-  }
-}
-
-/* Lyrics is a drawer, not a layout mode. Keep the artwork geometry square so
-   opening it cannot squeeze the circular visualizer into an ellipse. */
-@media (min-width: 701px) {
-  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-content {
-    width: min(100%, 1000px) !important;
-    margin-inline: auto !important;
-    grid-template-columns: minmax(220px, 420px) minmax(0, 520px) !important;
-    column-gap: clamp(42px, 6vw, 76px) !important;
-  }
-  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-art-stage {
-    width: min(420px, 100%) !important;
-    height: min(420px, 100%) !important;
-    aspect-ratio: 1 / 1 !important;
-  }
-  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-art-stage .now-playing-art {
-    width: 100% !important;
-    height: 100% !important;
-    aspect-ratio: 1 / 1 !important;
-  }
-}
-
-/* Final Lyrics composition: the drawer gets a real column, while the player
-   keeps enough room for its artwork, controls, and active visualizer. */
-@media (min-width: 1001px) {
-  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-content {
-    width: calc(100% - min(410px, 34vw) - 5vw) !important;
-    margin-left: 3vw !important;
-    margin-right: calc(min(410px, 34vw) + 2vw) !important;
-    grid-template-columns: minmax(280px, 390px) minmax(300px, 1fr) !important;
-    column-gap: clamp(28px, 4vw, 58px) !important;
-  }
-  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-art-stage {
-    width: min(390px, 100%) !important;
-    height: auto !important;
-    aspect-ratio: 1 / 1 !important;
-  }
-  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-cover-visualizer {
-    inset: -42px !important;
-    width: calc(100% + 84px) !important;
-    height: calc(100% + 84px) !important;
-  }
-}
-
-@media (min-width: 701px) and (max-width: 1000px) {
-  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-content {
-    width: calc(100% - 330px) !important;
-    margin-left: 24px !important;
-    margin-right: 306px !important;
-    grid-template-columns: minmax(200px, 240px) minmax(0, 1fr) !important;
-    column-gap: 18px !important;
-  }
-  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-art-stage {
-    width: min(240px, 100%) !important;
-    height: auto !important;
-    aspect-ratio: 1 / 1 !important;
-  }
-  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-cover-visualizer {
-    inset: -30px !important;
-    width: calc(100% + 60px) !important;
-    height: calc(100% + 60px) !important;
-  }
-}
-
 /* Mobile final overrides: this block intentionally lives at the end. */
 @media (max-width: 650px) {
   html, body { min-width: 320px; overflow-x: hidden; }
@@ -6008,25 +5927,55 @@ body.is-audio-playing .player-mini-wave i { animation-play-state: running; }
   .queue-list { max-height: 42svh; overflow-y: auto; }
 }
 
-/* Keep the player visible beside the lyric drawer instead of replacing it. */
+/* The lyrics panel is a right-side drawer; the player remains a stable,
+   visible column beside it at desktop widths. */
 .now-playing.has-lyrics-open .now-playing-content {
   opacity: 1 !important;
   visibility: visible !important;
   pointer-events: auto !important;
 }
 .now-playing.has-lyrics-open .lyrics-panel {
-  inset: 88px 24px 24px auto !important;
-  width: min(390px, 34vw) !important;
-  height: auto !important;
-  max-height: calc(100dvh - 112px) !important;
-  padding: clamp(16px, 2vw, 24px) !important;
+  position: absolute !important;
+  top: 88px !important;
+  right: 18px !important;
+  bottom: auto !important;
+  left: auto !important;
+  width: min(390px, 36vw) !important;
+  height: min(680px, 68vh) !important;
+  min-height: 0 !important;
+  max-height: calc(100dvh - 104px) !important;
+  overflow: hidden !important;
+  padding: clamp(16px, 1.8vw, 24px) !important;
   background: linear-gradient(150deg, rgba(32,38,30,.97), rgba(14,17,14,.96)) !important;
   box-shadow: 0 24px 80px rgba(0,0,0,.42), inset 0 1px rgba(255,255,255,.045) !important;
 }
-@media (min-width: 1001px) {
-  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-content {
+.now-playing.has-lyrics-open .lyrics-heading {
+  display: grid !important;
+  grid-template-columns: minmax(84px, 1fr) auto !important;
+  align-items: start !important;
+  gap: 12px !important;
+}
+.now-playing.has-lyrics-open .lyrics-heading-actions {
+  flex-wrap: wrap !important;
+  justify-content: flex-end !important;
+}
+.now-playing.has-lyrics-open .lyrics-view {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: auto !important;
+  margin-top: 18px !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+}
+.now-playing.has-lyrics-open .lyrics-view p {
+  font-size: clamp(1rem, 1.12vw, 1.2rem);
+  line-height: 1.55;
+}
+
+@media (min-width: 1500px) {
+  .now-playing.has-lyrics-open .now-playing-content {
     position: absolute !important;
-    inset: 84px min(430px, 35vw) 24px 4vw !important;
+    inset: 84px 33vw 112px clamp(48px, 7.4vw, 144px) !important;
     width: auto !important;
     max-width: none !important;
     min-height: 0 !important;
@@ -6034,28 +5983,37 @@ body.is-audio-playing .player-mini-wave i { animation-play-state: running; }
     display: grid !important;
     align-content: center !important;
     align-items: center !important;
-    grid-template-columns: minmax(240px, min(34vw, 430px)) minmax(300px, 1fr) !important;
-    column-gap: clamp(24px, 3vw, 52px) !important;
+    grid-template-columns: minmax(300px, min(36vw, 500px)) minmax(0, 1fr) !important;
+    column-gap: clamp(32px, 3.4vw, 66px) !important;
     transform: none !important;
-    opacity: 1 !important;
-    visibility: visible !important;
-    pointer-events: auto !important;
   }
-  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-art-stage {
-    width: min(360px, 100%) !important;
+  .now-playing.has-lyrics-open .now-playing-art-stage {
+    width: min(500px, 100%) !important;
     height: auto !important;
     aspect-ratio: 1 !important;
+  }
+  .now-playing.has-lyrics-open .now-playing-art-stage .now-playing-art {
+    width: 100% !important;
+    height: 100% !important;
+    aspect-ratio: 1 !important;
+  }
+  .now-playing.has-lyrics-open .now-playing-cover-visualizer {
+    inset: -48px !important;
+    width: calc(100% + 96px) !important;
+    height: calc(100% + 96px) !important;
+  }
+  .now-playing.has-lyrics-open .lyrics-panel {
+    top: 98px !important;
+    right: clamp(28px, 2.9vw, 56px) !important;
+    width: min(450px, 34vw) !important;
+    height: min(750px, calc(100dvh - 136px)) !important;
   }
 }
-@media (min-width: 701px) and (max-width: 1000px) {
-  .now-playing.has-lyrics-open .lyrics-panel {
-    inset: 80px 18px 18px auto !important;
-    width: min(340px, 36vw) !important;
-    max-height: calc(100dvh - 98px) !important;
-  }
-  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-content {
+
+@media (min-width: 701px) and (max-width: 1499px) {
+  .now-playing.has-lyrics-open .now-playing-content {
     position: absolute !important;
-    inset: 78px 360px 18px 18px !important;
+    inset: 78px calc(min(390px, 36vw) + 42px) 18px 18px !important;
     width: auto !important;
     max-width: none !important;
     min-height: 0 !important;
@@ -6063,17 +6021,31 @@ body.is-audio-playing .player-mini-wave i { animation-play-state: running; }
     display: grid !important;
     align-content: center !important;
     align-items: center !important;
-    grid-template-columns: minmax(150px, 220px) minmax(220px, 1fr) !important;
-    column-gap: 18px !important;
+    grid-template-columns: minmax(140px, min(22vw, 280px)) minmax(0, 1fr) !important;
+    column-gap: clamp(12px, 2vw, 24px) !important;
     transform: none !important;
-    opacity: 1 !important;
-    visibility: visible !important;
-    pointer-events: auto !important;
   }
-  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-art-stage {
-    width: min(220px, 100%) !important;
+  .now-playing.has-lyrics-open .now-playing-art-stage {
+    width: min(280px, 100%) !important;
     height: auto !important;
     aspect-ratio: 1 !important;
+  }
+  .now-playing.has-lyrics-open .lyrics-panel {
+    width: min(390px, 36vw) !important;
+    height: min(680px, 68vh) !important;
+  }
+}
+
+@media (max-width: 700px) {
+  .now-playing.has-lyrics-open .lyrics-panel {
+    position: absolute !important;
+    inset: 64px 10px 12px !important;
+    width: auto !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    margin: 0 !important;
+    z-index: 60 !important;
   }
 }
 
@@ -6083,6 +6055,10 @@ body.is-audio-playing .player-mini-wave i { animation-play-state: running; }
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   scrollbar-gutter: stable;
+}
+.lyrics-view:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--art-accent-soft, var(--accent)) 75%, white);
+  outline-offset: 3px;
 }
 .lyrics-view p { scroll-margin-block: 42vh; }
 .lyrics-source-links { max-height: 25%; overflow-y: auto; align-content: start; }

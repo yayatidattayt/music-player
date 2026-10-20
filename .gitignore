@@ -6,6 +6,7 @@ data/*.db
 app/uploads/
 *.log
 current-flow.png
+.deno/
 
 # Local Android build tooling and generated caches
 ydkmobile/android-sdk/
