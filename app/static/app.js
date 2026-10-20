@@ -514,6 +514,7 @@ async function submitAuth(mode, event) {
     startAuthenticatedApp(data);
   } catch (error) {
     setAuthStatus(error.message, "is-error");
+    requestAnimationFrame(() => byId("auth-status")?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
   } finally {
     button.disabled = false;
     button.textContent = signup ? "Create account" : "Log in";
