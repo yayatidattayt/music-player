@@ -9,6 +9,7 @@ librosa>=0.10,<1.0
 soundfile>=0.12,<1.0
 python-dotenv>=1.0,<2.0
 yt-dlp[default]>=2026.8.19
+curl-cffi>=0.13,<1.0
 pytest>=8.0,<10.0
 httpx2>=2.13,<3.0
 boto3>=1.35,<2.0

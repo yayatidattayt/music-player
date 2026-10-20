@@ -2338,25 +2338,67 @@ def reorder_liked_tracks(
     return {"message": "Liked songs order saved."}
 
 
+def youtube_ydl_options(**overrides) -> dict:
+    options = {
+        "format": "bestaudio/best",
+        "noplaylist": True,
+        "socket_timeout": 30,
+        "retries": 10,
+        "extractor_retries": 5,
+        "fragment_retries": 10,
+        "noprogress": True,
+        "quiet": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios", "mweb", "tv_embedded"],
+                "skip": ["webpage", "configs"],
+            }
+        },
+        "impersonate": "chrome",
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+        "nocheckcertificate": True,
+    }
+    cookie_file = os.getenv("YOUTUBE_COOKIES_FILE", "").strip()
+    if cookie_file and Path(cookie_file).is_file():
+        options["cookiefile"] = cookie_file
+    proxy_url = os.getenv("YOUTUBE_PROXY_URL", "").strip()
+    if proxy_url:
+        options["proxy"] = proxy_url
+    options.update(overrides)
+    return options
+
+
+def youtube_download_error(error: Exception) -> HTTPException | None:
+    """Convert YouTube HTTP failures into stable API errors for both clients."""
+    detail = str(error).lower()
+    if re.search(r"(?:http\s+error|status\s+code|http)[^0-9]{0,16}403\b", detail) or "forbidden" in detail:
+        return HTTPException(
+            status_code=403,
+            detail="YouTube blocked this server's download. Try another source or upload an audio file.",
+        )
+    if re.search(r"(?:http\s+error|status\s+code|http)[^0-9]{0,16}429\b", detail) or "too many requests" in detail:
+        return HTTPException(
+            status_code=429,
+            detail="YouTube rate-limited this server. Please wait a moment and try again.",
+        )
+    return None
+
+
 @router.post("/yt-download", response_model=TrackRead, status_code=status.HTTP_201_CREATED)
 def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
     playlist = get_playlist_or_404(req.playlist_id, db)
 
-    ydl_opts = {
-        # Preserve the source audio. Android and modern browsers play these
-        # containers directly; unconditional MP3 conversion fails on hosts
-        # without FFmpeg and wastes CPU on the free backend.
-        'format': 'bestaudio/best',
-        'noplaylist': True,
-        'socket_timeout': 30,
-        'retries': 3,
-        'extractor_retries': 3,
-        'fragment_retries': 5,
-        'noprogress': True,
-        'outtmpl': str(UPLOAD_DIR / f"{uuid4().hex}.%(ext)s"),
-        'quiet': True,
-        'max_filesize': 100 * 1024 * 1024,
-    }
+    ydl_opts = youtube_ydl_options(
+        outtmpl=str(UPLOAD_DIR / f"{uuid4().hex}.%(ext)s"),
+        max_filesize=100 * 1024 * 1024,
+    )
     # Leave yt-dlp's automatic runtime selection intact. Forcing Node here can
     # suppress its default Deno runtime on hosts with an older Node install.
     bundled_ffmpeg = UPLOAD_DIR.parent.parent / "ffmpeg.exe"
@@ -2444,6 +2486,9 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
     except Exception as e:
         if 'downloaded_path' in locals() and downloaded_path.exists():
             downloaded_path.unlink()
+        youtube_error = youtube_download_error(e)
+        if youtube_error:
+            raise youtube_error from e
         raise HTTPException(status_code=400, detail=f"Failed to fetch audio: {e}") from e
 
 
@@ -2452,12 +2497,10 @@ def search_youtube_audio(req: YouTubeSearchRequest, db: DbSession) -> Track:
     # Reject inaccessible playlists before doing any external work.
     get_playlist_or_404(req.playlist_id, db)
     try:
-        with yt_dlp.YoutubeDL({
-            "quiet": True,
-            "noplaylist": True,
-            "extract_flat": True,
-            "socket_timeout": 20,
-        }) as ydl:
+        with yt_dlp.YoutubeDL(youtube_ydl_options(
+            extract_flat=True,
+            socket_timeout=20,
+        )) as ydl:
             result = ydl.extract_info(f"ytsearch1:{req.query}", download=False)
         entry = (result.get("entries") or [None])[0] if result else None
         url = (entry or {}).get("webpage_url") or ((entry or {}).get("original_url"))
@@ -2472,6 +2515,9 @@ def search_youtube_audio(req: YouTubeSearchRequest, db: DbSession) -> Track:
     except HTTPException:
         raise
     except Exception as e:
+        youtube_error = youtube_download_error(e)
+        if youtube_error:
+            raise youtube_error from e
         raise HTTPException(status_code=400, detail=f"YouTube search failed: {e}") from e
 
 

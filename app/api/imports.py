@@ -85,7 +85,10 @@ def run_import(job_id: str):
             # Strip terminal styling and never put signed media URLs into UI.
             detail = re.sub(r"\x1b\[[0-9;]*m", "", detail)
             lower = detail.lower()
-            if any(word in lower for word in ("sign in to confirm", "not a bot", "http error 403")):
+            if (
+                any(word in lower for word in ("sign in to confirm", "not a bot", "http error 403", "http error 429"))
+                or (isinstance(error, HTTPException) and error.status_code in (403, 429))
+            ):
                 message = "YouTube blocked this server's download. Try another source or upload an audio file."
             elif "refresh" in lower or "invalid_grant" in lower:
                 message = "Google Drive access expired. Reconnect Google in your profile, then retry."
