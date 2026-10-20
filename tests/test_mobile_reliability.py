@@ -16,7 +16,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, migrate_schema
 from app.models import AuthSession, GoogleDriveConnection, ImportJob, MobileLoginCode, Playlist, User
 from app.api.auth import MobileLoginRequest, complete_mobile_login, google_drive_callback, google_drive_status, token_digest
-from app.api.imports import ImportRequest, import_status, run_import, start_import
+from app.api.imports import ImportRequest, import_status, run_import, safe_import_diagnostic, start_import
 from app.api.playlists import redirect_cover_file, stream_drive_media
 
 
@@ -142,6 +142,15 @@ def test_import_rejects_untrusted_link(db):
     with pytest.raises(HTTPException) as error:
         start_import(ImportRequest(query="https://example.test/audio", playlist_id=1, request_id=uuid4()), BackgroundTasks(), db.get(User, 1), db)
     assert error.value.status_code == 422
+
+
+def test_import_diagnostic_is_actionable_without_leaking_secrets():
+    detail = "Failed to fetch audio: token=secret123 https://example.test/download?sig=secret456 No supported JavaScript runtime"
+    safe = safe_import_diagnostic(detail)
+    assert "No supported JavaScript runtime" in safe
+    assert "secret123" not in safe
+    assert "secret456" not in safe
+    assert "[source URL]" in safe
 
 
 @pytest.mark.parametrize("failure", [False, True])

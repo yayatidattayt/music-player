@@ -33,6 +33,19 @@ def job_payload(job: ImportJob):
     )}
 
 
+def safe_import_diagnostic(detail: str) -> str:
+    """Keep actionable downloader errors while removing URLs and credentials."""
+    detail = re.sub(r"\x1b\[[0-9;]*m", "", detail)
+    detail = re.sub(r"https?://\S+", "[source URL]", detail)
+    detail = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [redacted]", detail)
+    detail = re.sub(
+        r"(?i)\b(cookie|authorization|token|password|api[_ -]?key)(?:\s*[:=]\s*|\s+)\S+",
+        r"\1=[redacted]",
+        detail,
+    )
+    return " ".join(detail.split())[:240]
+
+
 def run_import(job_id: str):
     with SessionLocal() as db:
         job = db.get(ImportJob, job_id)
@@ -67,7 +80,11 @@ def run_import(job_id: str):
             elif isinstance(error, HTTPException) and error.status_code in (404, 409):
                 message = detail
             else:
-                message = "Could not import this song. Try again or upload an audio file."
+                diagnostic = safe_import_diagnostic(detail)
+                message = (
+                    f"YouTube import failed: {diagnostic}"
+                    if diagnostic else "YouTube import failed. Try another result or upload an audio file."
+                )
             logger.warning("Import %s failed (%s): %s", job.id, type(error).__name__, re.sub(r"https?://\S+", "[URL]", detail)[:500])
             job.status, job.message = "failed", message[:500]
             db.commit()
