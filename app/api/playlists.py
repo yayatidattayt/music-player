@@ -1976,7 +1976,7 @@ def lyric_artist_candidates(value: str) -> list[str]:
 
 
 def _lyrics_json(url: str) -> object:
-    request = Request(url, headers={"Accept": "application/json", "User-Agent": "YDKMusic/1.5 lyrics lookup"})
+    request = Request(url, headers={"Accept": "application/json", "User-Agent": "YDKMusic/1.5 (https://ydkmusic.onrender.com) lyrics lookup"})
     with urlopen(request, timeout=5) as response:
         return json.loads(response.read().decode("utf-8"))
 
@@ -1984,43 +1984,64 @@ def _lyrics_json(url: str) -> object:
 def _lrclib_match(track: Track) -> dict | None:
     title = clean_imported_title(track.title, track.artist)
     artist = (track.artist or "").strip()
-    query = {"track_name": title, "artist_name": artist}
-    if track.album:
-        query["album_name"] = track.album
+    titles = lyric_candidates(track.title, artist)[:4] or [title]
+    artists = lyric_artist_candidates(artist)[:3] or [artist]
     duration = int(track.duration_seconds or 0)
-    if 1 <= duration <= 3600:
-        query["duration"] = duration
     exact_plain = None
-    try:
-        exact = _lyrics_json("https://lrclib.net/api/get?" + urlencode(query))
+
+    # YouTube imports often contain alternate title spellings or channel names.
+    # Try a few metadata-normalized exact lookups before the broader search.
+    exact_pairs = [(titles[0], artists[0])]
+    exact_pairs.extend((candidate_title, artists[0]) for candidate_title in titles[1:3])
+    exact_pairs.extend((titles[0], candidate_artist) for candidate_artist in artists[1:2])
+    seen_pairs: set[tuple[str, str]] = set()
+    for candidate_title, candidate_artist in exact_pairs:
+        pair = (normalize_lyric_text(candidate_title), normalize_lyric_text(candidate_artist))
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        query = {"track_name": candidate_title, "artist_name": candidate_artist}
+        if track.album:
+            query["album_name"] = track.album
+        if 1 <= duration <= 3600:
+            query["duration"] = duration
+        try:
+            exact = _lyrics_json("https://lrclib.net/api/get?" + urlencode(query))
+        except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
+            continue
         if isinstance(exact, dict) and exact.get("syncedLyrics"):
             return exact
-        if isinstance(exact, dict) and exact.get("plainLyrics"):
+        if exact_plain is None and isinstance(exact, dict) and exact.get("plainLyrics"):
             exact_plain = exact
-    except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
-        pass
 
-    try:
-        results = _lyrics_json("https://lrclib.net/api/search?" + urlencode({"q": f"{title} {artist}"}))
-    except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
-        return exact_plain
-    if not isinstance(results, list):
-        return None
-    wanted_title = normalize_lyric_text(title)
-    wanted_artist = normalize_lyric_text(artist)
+    search_queries = [f"{candidate_title} {candidate_artist}".strip() for candidate_title, candidate_artist in exact_pairs]
     ranked = []
-    for item in results:
-        if not isinstance(item, dict) or not (item.get("syncedLyrics") or item.get("plainLyrics")):
+    searched: set[str] = set()
+    for search_query in search_queries:
+        normalized_query = normalize_lyric_text(search_query)
+        if not normalized_query or normalized_query in searched:
             continue
-        result_title = normalize_lyric_text(item.get("trackName"))
-        result_artist = normalize_lyric_text(item.get("artistName"))
-        title_score = SequenceMatcher(None, wanted_title, result_title).ratio()
-        artist_score = SequenceMatcher(None, wanted_artist, result_artist).ratio() if wanted_artist else 1.0
-        if title_score < .72 or artist_score < .55:
+        searched.add(normalized_query)
+        try:
+            results = _lyrics_json("https://lrclib.net/api/search?" + urlencode({"q": search_query}))
+        except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
             continue
-        result_duration = float(item.get("duration") or 0)
-        duration_penalty = min(abs(result_duration - duration) / max(duration, 1), 1) if duration else 0
-        ranked.append((title_score * .55 + artist_score * .4 - duration_penalty * .2 + bool(item.get("syncedLyrics")) * .08, item))
+        if not isinstance(results, list):
+            continue
+        for item in results:
+            if not isinstance(item, dict) or not (item.get("syncedLyrics") or item.get("plainLyrics")):
+                continue
+            result_title = normalize_lyric_text(item.get("trackName"))
+            result_artist = normalize_lyric_text(item.get("artistName"))
+            title_score = max((SequenceMatcher(None, normalize_lyric_text(candidate), result_title).ratio() for candidate in titles), default=0)
+            artist_score = max((SequenceMatcher(None, normalize_lyric_text(candidate), result_artist).ratio() for candidate in artists), default=1)
+            if title_score < .72 or artist_score < .55:
+                continue
+            result_duration = float(item.get("duration") or 0)
+            duration_penalty = min(abs(result_duration - duration) / max(duration, 1), 1) if duration else 0
+            ranked.append((title_score * .55 + artist_score * .4 - duration_penalty * .2 + bool(item.get("syncedLyrics")) * .08, item))
+        if ranked:
+            break
     return max(ranked, key=lambda pair: pair[0])[1] if ranked else exact_plain
 
 
@@ -2065,12 +2086,36 @@ def _musixmatch_match(track: Track) -> tuple[str | None, str | None]:
         return None, None
 
 
+def _lyrics_ovh_match(track: Track) -> str | None:
+    """Use lyrics.ovh as a plain-text fallback when timed/licensed sources miss."""
+    titles = lyric_candidates(track.title, track.artist)[:3]
+    artists = lyric_artist_candidates(track.artist or "")[:2]
+    candidates = [(titles[0], artists[0])] if titles and artists else []
+    candidates.extend((title, artists[0]) for title in titles[1:3] if artists)
+    candidates.extend((titles[0], artist) for artist in artists[1:2] if titles)
+    seen: set[tuple[str, str]] = set()
+    for candidate_title, candidate_artist in candidates:
+        key = (normalize_lyric_text(candidate_title), normalize_lyric_text(candidate_artist))
+        if key in seen:
+            continue
+        seen.add(key)
+        url = "https://api.lyrics.ovh/v1/" + quote(candidate_artist, safe="") + "/" + quote(candidate_title, safe="")
+        try:
+            result = _lyrics_json(url)
+        except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
+            continue
+        lyrics = str(result.get("lyrics") or "").strip() if isinstance(result, dict) else ""
+        if lyrics:
+            return lyrics
+    return None
+
+
 @router.get("/tracks/{track_id}/lyrics")
 def fetch_track_lyrics(track_id: int, db: DbSession) -> dict[str, object]:
     """Find timed lyrics first, then fall back to licensed Musixmatch when configured."""
     track = get_track_or_404(track_id, db)
     title = clean_imported_title(track.title, track.artist)
-    artist = track.artist.strip()
+    artist = (track.artist or "").strip()
     query = f"{title} {artist}".strip()
     quoted = quote(query)
     lrclib = None
@@ -2093,6 +2138,16 @@ def fetch_track_lyrics(track_id: int, db: DbSession) -> dict[str, object]:
             lyrics, source, synced = musixmatch_lyrics, musixmatch_source, musixmatch_synced
         elif lrclib_plain:
             lyrics, source = lrclib_plain, "LRCLIB"
+    if not lyrics:
+        try:
+            lyrics_ovh = _lyrics_ovh_match(track)
+        except Exception:
+            # A secondary provider outage must not interrupt playback.
+            lyrics_ovh = None
+        if lyrics_ovh:
+            lyrics, source, synced = lyrics_ovh, "Lyrics.ovh", False
+        elif lrclib_plain:
+            lyrics, source = lrclib_plain, "LRCLIB"
     return {
         "source": source,
         "synced": synced or bool(lyrics and re.search(r"\[\d{1,2}:\d{2}(?:\.\d+)?\]", lyrics)),
@@ -2101,7 +2156,15 @@ def fetch_track_lyrics(track_id: int, db: DbSession) -> dict[str, object]:
         "links": [
             {"name": "LRCLIB", "url": f"https://lrclib.net/search?q={quoted}"},
             {"name": "Musixmatch", "url": f"https://www.musixmatch.com/search/{quoted}"},
+            {"name": "Lyrics.ovh", "url": f"https://lyrics.ovh/search?q={quoted}"},
             {"name": "Genius", "url": f"https://genius.com/search?q={quoted}"},
+            {"name": "AZLyrics", "url": f"https://www.google.com/search?q={quote('site:azlyrics.com ' + query + ' lyrics')}"},
+            {"name": "Paroles.net", "url": f"https://www.google.com/search?q={quote('site:paroles.net ' + query + ' paroles')}"},
+            {"name": "Letras.mus.br", "url": f"https://www.google.com/search?q={quote('site:letras.mus.br ' + query + ' letra')}"},
+            {"name": "LyricsMania", "url": f"https://www.google.com/search?q={quote('site:lyricsmania.com ' + query + ' lyrics')}"},
+            {"name": "SongLyrics", "url": f"https://www.google.com/search?q={quote('site:songlyrics.com ' + query + ' lyrics')}"},
+            {"name": "LyricsTranslate", "url": f"https://www.google.com/search?q={quote('site:lyricstranslate.com ' + query + ' lyrics')}"},
+            {"name": "YouTube lyrics search", "url": f"https://www.youtube.com/results?search_query={quote(query + ' lyrics')}"},
             {"name": "Lyrics.com", "url": f"https://www.lyrics.com/serp.php?st={quote(title)}&qtype=1"},
             {"name": "Web search", "url": f"https://www.google.com/search?q={quote(query + ' lyrics')}"},
         ],

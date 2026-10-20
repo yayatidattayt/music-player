@@ -56,6 +56,7 @@ const state = {
   lyricSource: null,
   lyricRefresh: Number(localStorage.getItem("ydkmusic-lyric-refresh") || 0),
   authStarted: false,
+  nativeAuthRestoreInFlight: false,
   currentUser: null,
   profileLoading: false,
 };
@@ -2524,6 +2525,9 @@ async function playTrack(track, options = {}) {
   updatePlayerDisplay();
   renderPlaylist();
   broadcastPlaybackState();
+  // Resolve lyrics as soon as a library track starts so opening Now Playing
+  // never depends on a separate user gesture to begin the lookup.
+  if (track.id > 0 && !String(track.lyrics || "").trim()) void loadTrackLyrics();
 }
 
 function playbackTracks() {
@@ -4562,6 +4566,30 @@ async function startGoogleSignIn() {
     window.location.href = apiUrl("/api/auth/google/sign-in");
   }
 }
+async function restoreNativeLoginSession() {
+  if (state.authStarted || state.nativeAuthRestoreInFlight) return;
+  state.nativeAuthRestoreInFlight = true;
+  try {
+    // Android persists the one-time session cookie before raising loginComplete.
+    // Retry briefly on app resume to cover WebView cookie-store propagation.
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const response = await fetch(apiUrl("/api/auth/me"), {
+        credentials: configuredApiBase ? "include" : "same-origin",
+        cache: "no-store",
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok && payload.authenticated && payload.user) {
+        startAuthenticatedApp(payload.user);
+        return;
+      }
+      if (response.status !== 401 && response.ok) break;
+      if (attempt < 5) await new Promise((resolve) => setTimeout(resolve, 650));
+    }
+    throw new Error("Google signed you in, but the app could not restore your session. Please try once more.");
+  } finally {
+    state.nativeAuthRestoreInFlight = false;
+  }
+}
 window.Capacitor?.Plugins?.NativeAuth?.addListener("loginComplete", async (result) => {
   if (!result.success) {
     setAuthStatus(result.message || "Google sign-in could not finish. Please try again.", "is-error");
@@ -4569,19 +4597,18 @@ window.Capacitor?.Plugins?.NativeAuth?.addListener("loginComplete", async (resul
   }
   setAuthStatus("Google sign-in complete. Opening your library…");
   try {
-    const response = await fetch(apiUrl("/api/auth/me"), {
-      credentials: configuredApiBase ? "include" : "same-origin",
-      cache: "no-store",
-    });
-    const payload = await response.json();
-    if (!response.ok || !payload.authenticated || !payload.user) {
-      throw new Error("Google signed you in, but the app could not restore your session. Please try once more.");
-    }
-    startAuthenticatedApp(payload.user);
+    await restoreNativeLoginSession();
   } catch (error) {
     setAuthStatus(error.message || "Google signed in, but your library could not reconnect. Check your connection and try again.", "is-error");
   }
 });
+if (isMobileShell) {
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && !state.authStarted) {
+      void restoreNativeLoginSession().catch(() => {});
+    }
+  });
+}
 byId("google-signin-button")?.addEventListener("click", startGoogleSignIn);
 byId("auth-login-form").addEventListener("submit", (event) => submitAuth("login", event));
 byId("auth-signup-form").addEventListener("submit", (event) => submitAuth("signup", event));

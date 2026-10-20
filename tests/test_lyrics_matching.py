@@ -57,7 +57,9 @@ class LyricsMatchingTests(unittest.TestCase):
                 self.assertTrue(result["synced"])
                 self.assertEqual(result["lyrics"], timed["syncedLyrics"])
                 self.assertEqual(lookup.call_count, 1)
-                self.assertIn("Genius", [link["name"] for link in result["links"]])
+                sources = [link["name"] for link in result["links"]]
+                self.assertIn("Genius", sources)
+                self.assertTrue({"Paroles.net", "Letras.mus.br", "LyricsMania", "SongLyrics", "LyricsTranslate"}.issubset(sources))
         finally:
             engine.dispose()
 
@@ -114,6 +116,36 @@ class LyricsMatchingTests(unittest.TestCase):
                 self.assertEqual(result["lyrics"], "[00:03.00]timed")
                 self.assertEqual(result["source"], "Musixmatch")
                 self.assertTrue(result["synced"])
+        finally:
+            engine.dispose()
+
+    def test_fetch_falls_back_to_lyrics_ovh_when_other_sources_miss(self):
+        from app.api.playlists import fetch_track_lyrics
+
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+        Base.metadata.create_all(engine)
+        try:
+            with Session(engine) as db:
+                user = User(display_name="Listener", email="lyrics4@example.test", password_hash="test")
+                db.add(user)
+                db.flush()
+                playlist = Playlist(name="Library", owner_id=user.id)
+                db.add(playlist)
+                db.flush()
+                track = Track(playlist_id=playlist.id, title="Halo", artist="Beyonce")
+                db.add(track)
+                db.commit()
+                db.info["current_user_id"] = user.id
+                with (
+                    patch("app.api.playlists._lrclib_match", return_value=None),
+                    patch("app.api.playlists._musixmatch_match", return_value=(None, None)),
+                    patch("app.api.playlists._lyrics_ovh_match", return_value="fallback lyrics"),
+                ):
+                    result = fetch_track_lyrics(track.id, db)
+                self.assertEqual(result["source"], "Lyrics.ovh")
+                self.assertEqual(result["lyrics"], "fallback lyrics")
+                self.assertFalse(result["synced"])
+                self.assertIn("Lyrics.ovh", [link["name"] for link in result["links"]])
         finally:
             engine.dispose()
 

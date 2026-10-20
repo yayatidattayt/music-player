@@ -6007,3 +6007,120 @@ body.is-audio-playing .player-mini-wave i { animation-play-state: running; }
   .equalizer-panel, .graphic-eq-panel { right: 8px !important; left: 8px !important; bottom: 146px !important; width: auto !important; max-height: calc(100svh - 170px); overflow-y: auto; }
   .queue-list { max-height: 42svh; overflow-y: auto; }
 }
+
+/* Keep the player visible beside the lyric drawer instead of replacing it. */
+.now-playing.has-lyrics-open .now-playing-content {
+  opacity: 1 !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
+.now-playing.has-lyrics-open .lyrics-panel {
+  inset: 88px 24px 24px auto !important;
+  width: min(390px, 34vw) !important;
+  height: auto !important;
+  max-height: calc(100dvh - 112px) !important;
+  padding: clamp(16px, 2vw, 24px) !important;
+  background: linear-gradient(150deg, rgba(32,38,30,.97), rgba(14,17,14,.96)) !important;
+  box-shadow: 0 24px 80px rgba(0,0,0,.42), inset 0 1px rgba(255,255,255,.045) !important;
+}
+@media (min-width: 1001px) {
+  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-content {
+    position: absolute !important;
+    inset: 84px min(430px, 35vw) 24px 4vw !important;
+    width: auto !important;
+    max-width: none !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    display: grid !important;
+    align-content: center !important;
+    align-items: center !important;
+    grid-template-columns: minmax(240px, min(34vw, 430px)) minmax(300px, 1fr) !important;
+    column-gap: clamp(24px, 3vw, 52px) !important;
+    transform: none !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    pointer-events: auto !important;
+  }
+  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-art-stage {
+    width: min(360px, 100%) !important;
+    height: auto !important;
+    aspect-ratio: 1 !important;
+  }
+}
+@media (min-width: 701px) and (max-width: 1000px) {
+  .now-playing.has-lyrics-open .lyrics-panel {
+    inset: 80px 18px 18px auto !important;
+    width: min(340px, 36vw) !important;
+    max-height: calc(100dvh - 98px) !important;
+  }
+  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-content {
+    position: absolute !important;
+    inset: 78px 360px 18px 18px !important;
+    width: auto !important;
+    max-width: none !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    display: grid !important;
+    align-content: center !important;
+    align-items: center !important;
+    grid-template-columns: minmax(150px, 220px) minmax(220px, 1fr) !important;
+    column-gap: 18px !important;
+    transform: none !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    pointer-events: auto !important;
+  }
+  .now-playing:has(.lyrics-panel:not([hidden])) .now-playing-art-stage {
+    width: min(220px, 100%) !important;
+    height: auto !important;
+    aspect-ratio: 1 !important;
+  }
+}
+
+/* Lyrics follow the track smoothly without fighting a user's manual scroll. */
+.lyrics-view {
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable;
+}
+.lyrics-view p { scroll-margin-block: 42vh; }
+.lyrics-source-links { max-height: 25%; overflow-y: auto; align-content: start; }
+@media (prefers-reduced-motion: reduce) {
+  .lyrics-view { scroll-behavior: auto; }
+}
+
+/* Mobile library: full-height side drawer with the existing desktop width. */
+@media (max-width: 650px) {
+  .app-shell .sidebar {
+    position: fixed !important;
+    inset: 0 auto 0 0 !important;
+    width: min(268px, 86vw) !important;
+    max-width: 86vw !important;
+    height: 100dvh !important;
+    max-height: none !important;
+    min-height: 100dvh !important;
+    overflow-y: auto !important;
+    padding: 18px 14px max(14px, env(safe-area-inset-bottom)) !important;
+    border-radius: 0 20px 20px 0 !important;
+  }
+  .app-shell .playlist-list { display: grid; max-height: none; overflow-x: hidden; overflow-y: auto; }
+  .app-shell .playlist-link { flex: initial; }
+  .app-shell .sidebar-footer { margin-top: auto; }
+  .sidebar-reopen { top: max(14px, env(safe-area-inset-top)); left: 12px; }
+  .now-playing.has-lyrics-open .lyrics-panel {
+    position: absolute !important;
+    inset: 64px 10px 12px !important;
+    width: auto !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    margin: 0 !important;
+    z-index: 60 !important;
+  }
+}
+
+/* Desktop sidebar background meets the viewport edges without changing width. */
+@media (min-width: 651px) {
+  .app-shell .sidebar { top: 0 !important; bottom: 0 !important; height: 100dvh !important; }
+}
