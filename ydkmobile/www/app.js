@@ -405,6 +405,9 @@ function setAuthStatus(message, tone = "") {
   const status = byId("auth-status");
   status.textContent = message;
   status.className = `auth-status ${tone}`.trim();
+  if (tone === "is-error") {
+    requestAnimationFrame(() => status.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+  }
 }
 
 async function unlockAuthPreview() {
@@ -498,24 +501,41 @@ async function submitAuth(mode, event) {
   button.disabled = true;
   button.textContent = signup ? "Creating account…" : "Logging in…";
   setAuthStatus("");
+  const controller = new AbortController();
+  const requestTimeout = setTimeout(() => controller.abort(), 60000);
   try {
-    const response = await fetch(apiUrl(`/api/auth/${signup ? "signup" : "login"}`), {
-      method: "POST",
-      credentials: configuredApiBase ? "include" : "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      const detail = Array.isArray(data.detail) ? data.detail.map((item) => item.msg).join(" ") : data.detail;
-      throw new Error(detail || "Could not authenticate.");
+    if (isMobileShell) {
+      const nativeAuth = window.Capacitor?.Plugins?.NativeAuth;
+      if (typeof nativeAuth?.authenticate !== "function") {
+        throw new Error("Secure sign-in is unavailable in this app build. Update YDKMusic and try again.");
+      }
+      await nativeAuth.authenticate({ mode: signup ? "signup" : "login", credentials: payload });
+      setAuthStatus(signup ? "Account created. Opening your library…" : "Signing in…");
+    } else {
+      const response = await fetch(apiUrl(`/api/auth/${signup ? "signup" : "login"}`), {
+        method: "POST",
+        credentials: configuredApiBase ? "include" : "same-origin",
+        signal: controller.signal,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        const detail = Array.isArray(data.detail) ? data.detail.map((item) => item.msg).join(" ") : data.detail;
+        throw new Error(detail || "Could not authenticate.");
+      }
+      setAuthStatus(signup ? "Account created." : "Logged in.", "is-success");
+      startAuthenticatedApp(data);
     }
-    setAuthStatus(signup ? "Account created." : "Logged in.", "is-success");
-    startAuthenticatedApp(data);
   } catch (error) {
-    setAuthStatus(error.message, "is-error");
-    requestAnimationFrame(() => byId("auth-status")?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+    const message = error.name === "AbortError"
+      ? "The server is taking too long. Check your connection and try again."
+      : error instanceof TypeError
+        ? "Can’t reach your library. Check your connection and try again."
+        : error.message;
+    setAuthStatus(message, "is-error");
   } finally {
+    clearTimeout(requestTimeout);
     button.disabled = false;
     button.textContent = signup ? "Create account" : "Log in";
   }

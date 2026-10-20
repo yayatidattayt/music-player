@@ -17,6 +17,8 @@ import org.json.JSONObject;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
@@ -72,6 +74,90 @@ public final class NativeAuthPlugin extends Plugin {
             call.reject(error.getMessage() == null
                     ? "Could not open Google sign-in. Check that a browser is installed."
                     : error.getMessage());
+        }
+    }
+
+    /** Authenticate the mobile app natively so its session cookie is available to the WebView. */
+    @PluginMethod
+    public void authenticate(PluginCall call) {
+        String mode = call.getString("mode");
+        JSObject credentials = call.getObject("credentials");
+        if (!("login".equals(mode) || "signup".equals(mode)) || credentials == null) {
+            call.reject("Invalid sign-in request. Please try again.");
+            return;
+        }
+        execute(() -> {
+            HttpURLConnection connection = null;
+            try {
+                connection = (HttpURLConnection) new URL(API + "/api/auth/" + mode).openConnection();
+                connection.setRequestMethod("POST");
+                connection.setConnectTimeout(20000);
+                connection.setReadTimeout(60000);
+                connection.setDoOutput(true);
+                connection.setRequestProperty("Content-Type", "application/json");
+                try (java.io.OutputStream output = connection.getOutputStream()) {
+                    output.write(credentials.toString().getBytes(StandardCharsets.UTF_8));
+                }
+                int status = connection.getResponseCode();
+                InputStream responseStream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
+                String responseBody = readResponse(responseStream);
+                if ((status != 200 && status != 201) || responseBody.isEmpty()) {
+                    String message = "Could not sign in. Check your details and try again.";
+                    try {
+                        Object detail = new JSONObject(responseBody).opt("detail");
+                        if (detail instanceof String && !((String) detail).isEmpty()) message = (String) detail;
+                        else if (detail instanceof org.json.JSONArray) {
+                            org.json.JSONArray items = (org.json.JSONArray) detail;
+                            StringBuilder joined = new StringBuilder();
+                            for (int index = 0; index < items.length(); index++) {
+                                JSONObject item = items.optJSONObject(index);
+                                String part = item == null ? null : item.optString("msg", "");
+                                if (part != null && !part.isEmpty()) {
+                                    if (joined.length() > 0) joined.append(' ');
+                                    joined.append(part);
+                                }
+                            }
+                            if (joined.length() > 0) message = joined.toString();
+                        }
+                    } catch (Exception ignored) { }
+                    call.reject(message);
+                    return;
+                }
+                String sessionCookie = null;
+                for (Map.Entry<String, List<String>> header : connection.getHeaderFields().entrySet()) {
+                    if ("Set-Cookie".equalsIgnoreCase(header.getKey())) {
+                        for (String cookie : header.getValue()) {
+                            if (cookie.startsWith("ydkmusic_session=")) sessionCookie = cookie;
+                        }
+                    }
+                }
+                if (sessionCookie == null) throw new IllegalStateException("No app session was returned.");
+                final String cookie = sessionCookie;
+                getActivity().runOnUiThread(() -> CookieManager.getInstance().setCookie(API, cookie, accepted -> {
+                    CookieManager.getInstance().flush();
+                    if (accepted) {
+                        call.resolve();
+                        report(true, "");
+                    } else {
+                        call.reject("Could not save your login. Please try again.");
+                        report(false, "Could not save your login. Please try again.");
+                    }
+                }));
+            } catch (Exception error) {
+                call.reject("Could not reach your library. Check your connection and try again.");
+            } finally {
+                if (connection != null) connection.disconnect();
+            }
+        });
+    }
+
+    private String readResponse(InputStream input) throws Exception {
+        if (input == null) return "";
+        try (InputStream stream = input; ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[4096];
+            int read;
+            while ((read = stream.read(buffer)) != -1) output.write(buffer, 0, read);
+            return output.toString(StandardCharsets.UTF_8.name());
         }
     }
 
