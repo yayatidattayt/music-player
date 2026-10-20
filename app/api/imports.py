@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+import yt_dlp
 
 from ..database import SessionLocal, get_db
 from ..models import ImportJob, User
@@ -82,7 +83,7 @@ def run_import(job_id: str):
             else:
                 diagnostic = safe_import_diagnostic(detail)
                 message = (
-                    f"YouTube import failed: {diagnostic}"
+                    f"YouTube import failed (yt-dlp {yt_dlp.version.__version__}): {diagnostic}"
                     if diagnostic else "YouTube import failed. Try another result or upload an audio file."
                 )
             logger.warning("Import %s failed (%s): %s", job.id, type(error).__name__, re.sub(r"https?://\S+", "[URL]", detail)[:500])
