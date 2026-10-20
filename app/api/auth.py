@@ -11,13 +11,13 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import AuthSession, GoogleDriveConnection, User
+from ..models import AuthSession, GoogleDriveConnection, MobileLoginCode, User
 
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -261,19 +261,26 @@ def google_drive_connect(request: Request, db: Session = Depends(get_db)) -> Red
 
 @router.get("/google/sign-in", name="google_sign_in")
 def google_sign_in(request: Request) -> RedirectResponse:
+    mobile_challenge = request.query_params.get("mobile_challenge")
+    if mobile_challenge and not re.fullmatch(r"[A-Za-z0-9_-]{43}", mobile_challenge):
+        raise HTTPException(status_code=400, detail="Invalid app login challenge.")
     flow = _google_flow(request, GOOGLE_SIGNIN_SCOPES)
     authorization_url, state = flow.authorization_url(access_type="offline", include_granted_scopes="true", prompt="consent")
     response = RedirectResponse(authorization_url, status_code=307)
     secure = os.getenv("COOKIE_SECURE", "false").lower() == "true"
     response.set_cookie("ydkmusic_google_oauth_state", state, max_age=600, httponly=True, samesite="lax", secure=secure)
     response.set_cookie("ydkmusic_google_oauth_mode", "signin", max_age=600, httponly=True, samesite="lax", secure=secure)
+    if mobile_challenge:
+        response.set_cookie("ydkmusic_mobile_challenge", mobile_challenge, max_age=600, httponly=True, samesite="lax", secure=secure)
+    else:
+        response.delete_cookie("ydkmusic_mobile_challenge")
     if getattr(flow, "code_verifier", None):
         response.set_cookie("ydkmusic_google_oauth_verifier", flow.code_verifier, max_age=600, httponly=True, samesite="lax", secure=secure)
     return response
 
 
 @router.get("/google-drive/callback", name="google_drive_callback")
-def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> RedirectResponse:
+def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Response:
     state = request.cookies.get("ydkmusic_google_oauth_state")
     if not state or state != request.query_params.get("state"):
         raise HTTPException(status_code=400, detail="Google authorization state is invalid or expired.")
@@ -323,6 +330,8 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
             scopes=scopes,
             id_token=token_data.get("id_token"),
         )
+        if token_data.get("expires_in"):
+            credentials.expiry = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=int(token_data["expires_in"]))
     except Exception as exc:
         # Keep the response actionable while avoiding credentials or tokens.
         detail = str(exc).replace("\n", " ").strip()[:240]
@@ -369,6 +378,12 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
 
         connection = db.scalar(select(GoogleDriveConnection).where(GoogleDriveConnection.user_id == user.id))
         token_json = credentials.to_json()
+        if connection and connection.google_email == email and not credentials.refresh_token:
+            saved = json.loads(connection.token_json)
+            current = json.loads(token_json)
+            if saved.get("refresh_token"):
+                current["refresh_token"] = saved["refresh_token"]
+                token_json = json.dumps(current)
         folder_id = connection.drive_folder_id if connection else None
         if not folder_id:
             try:
@@ -391,8 +406,33 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
                 drive_folder_id=folder_id,
             ))
         db.commit()
-        response = RedirectResponse("/", status_code=303)
-        create_session(user, db, response)
+        challenge = request.cookies.get("ydkmusic_mobile_challenge")
+        if challenge and re.fullmatch(r"[A-Za-z0-9_-]{43}", challenge):
+            code = secrets.token_urlsafe(32)
+            db.execute(delete(MobileLoginCode).where(MobileLoginCode.expires_at <= datetime.now(timezone.utc)))
+            db.add(MobileLoginCode(
+                code_hash=token_digest(code), user_id=user.id, challenge=challenge,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            ))
+            db.commit()
+            # Only a short-lived, single-use code leaves the browser. The app
+            # must prove possession of its private verifier before a session
+            # can be issued. The fixed intent explicitly targets our package.
+            app_link = f"intent://auth?code={code}#Intent;scheme=ydkmusic;package=com.ydkmusic.app;end"
+            response = HTMLResponse(
+                '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">'
+                '<title>Return to YDKMusic</title><style>body{background:#171916;color:#f4f5ec;'
+                'font:18px system-ui;padding:64px 24px;text-align:center}a{display:inline-block;'
+                'padding:16px 24px;background:#c5d77b;color:#171916;border-radius:16px;text-decoration:none}'
+                '</style></head><body><h1>You’re signed in</h1><p>Return to your music in the app.</p>'
+                f'<p id="return-status">Opening YDKMusic…</p><a href="{app_link}">Open YDKMusic</a>'
+                f'<script>window.location.replace({json.dumps(app_link)});</script></body></html>',
+                headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+            )
+        else:
+            response = RedirectResponse("/", status_code=303)
+            create_session(user, db, response)
+        response.delete_cookie("ydkmusic_mobile_challenge")
         response.delete_cookie("ydkmusic_google_oauth_state")
         response.delete_cookie("ydkmusic_google_oauth_mode")
         response.delete_cookie("ydkmusic_google_oauth_verifier")
@@ -411,6 +451,30 @@ def google_drive_callback(request: Request, db: Session = Depends(get_db)) -> Re
     response.delete_cookie("ydkmusic_google_oauth_mode")
     response.delete_cookie("ydkmusic_google_oauth_verifier")
     return response
+
+
+class MobileLoginRequest(BaseModel):
+    code: str = Field(min_length=43, max_length=43, pattern=r"^[A-Za-z0-9_-]+$")
+    verifier: str = Field(min_length=43, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+@router.post("/google/mobile/complete")
+def complete_mobile_login(payload: MobileLoginRequest, response: Response, db: Session = Depends(get_db)):
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(payload.verifier.encode()).digest()).rstrip(b"=").decode()
+    # DELETE RETURNING consumes the code atomically, including simultaneous
+    # exchanges from multiple backend workers. A wrong verifier cannot burn it.
+    user_id = db.scalar(
+        delete(MobileLoginCode).where(
+            MobileLoginCode.code_hash == token_digest(payload.code),
+            MobileLoginCode.challenge == challenge,
+            MobileLoginCode.expires_at > datetime.now(timezone.utc),
+        ).returning(MobileLoginCode.user_id)
+    )
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="App login expired or invalid. Please sign in again.")
+    user = db.get(User, user_id)
+    response.headers["Cache-Control"] = "no-store"
+    return create_session(user, db, response)
 
 
 @router.get("/google-drive/status")

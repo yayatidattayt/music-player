@@ -133,6 +133,10 @@ public final class NativePlaybackPlugin extends Plugin {
                 ));
             }
             mediaController.prepare();
+            Double volume = call.getDouble("volume", 1.0);
+            mediaController.setVolume((float) Math.max(0, Math.min(1, volume)));
+            mediaController.setRepeatMode(call.getInt("repeatMode", Player.REPEAT_MODE_OFF));
+            mediaController.setShuffleModeEnabled(call.getBoolean("shuffle", false));
             Long positionMs = call.getLong("positionMs");
             if (positionMs != null && positionMs > 0) mediaController.seekTo(positionMs);
             mediaController.play();

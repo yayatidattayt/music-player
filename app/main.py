@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 import yt_dlp
 
 from .api.auth import router as auth_router
+from .api.imports import router as imports_router
 from .api.playlists import router as playlists_router
 from .api.rooms import cleanup_loop, router as rooms_router
 from .database import Base, engine, migrate_schema
@@ -170,4 +171,5 @@ def health() -> dict[str, str]:
 
 app.include_router(playlists_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
+app.include_router(imports_router, prefix="/api")
 app.include_router(rooms_router, prefix="/api")

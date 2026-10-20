@@ -19,6 +19,44 @@
   -webkit-font-smoothing: antialiased;
 }
 
+/* Last-pass mobile overrides (kept at EOF so desktop polish cannot undo them). */
+@media (max-width: 650px) {
+  html, body { min-width: 320px; overflow-x: hidden; }
+  .app-shell .sidebar { position: sticky; top: 0; z-index: 30; width: 100%; max-height: 43svh; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 12px 14px 10px; border-radius: 0 0 20px 20px; }
+  .app-shell .playlist-list { display: flex; gap: 7px; min-height: 0; max-height: 84px; overflow-x: auto; overflow-y: hidden; padding: 4px 1px 7px; }
+  .app-shell .playlist-link { flex: 0 0 168px; }
+  .app-shell .sidebar-footer { display: flex; margin-top: 5px; padding-top: 9px; }
+  .main-area { margin-left: 0 !important; min-height: 100svh; }
+  .api-link { display: none; }
+  .playlist-view, .profile-view { padding: 20px 14px calc(148px + env(safe-area-inset-bottom)); }
+  .playlist-hero { grid-template-columns: 88px minmax(0, 1fr); gap: 14px; }
+  .hero-cover { width: 88px; height: 88px; }
+  .hero-title { font-size: clamp(1.55rem, 8vw, 2.25rem); overflow-wrap: anywhere; }
+  .hero-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+  .hero-actions .button { min-height: 42px; padding-inline: 8px; }
+  .track-row { grid-template-columns: 25px minmax(0, 1fr) 52px; grid-template-areas: "number main duration" "number actions actions"; min-height: 86px; gap: 5px 8px; padding: 10px 7px; }
+  .track-number { grid-area: number; align-self: start; padding-top: 5px; }
+  .track-main { grid-area: main; }
+  .track-album { display: none; }
+  .track-duration { grid-area: duration; align-self: start; margin-top: 5px; text-align: right; }
+  .track-actions { grid-area: actions; justify-content: flex-start; gap: 5px; opacity: 1; }
+  .track-actions button { min-width: 34px; min-height: 34px; }
+  .dialog-form, .mood-dialog { width: calc(100vw - 20px); max-height: calc(100svh - 20px); overflow-y: auto; }
+  .dialog-form input, .dialog-form textarea, .dialog-form select, .dialog-form button { font-size: 16px; }
+  .player-bar { position: fixed; z-index: 40; right: 8px !important; bottom: max(8px, env(safe-area-inset-bottom)) !important; left: 8px !important; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "song options" "controls controls"; min-height: 128px; padding: 10px 11px 11px; border-radius: 18px; }
+  .player-song { grid-area: song; min-width: 0; }
+  .player-controls { grid-area: controls; min-width: 0; grid-template-columns: 32px 42px 32px minmax(0, 1fr) 32px; gap: 6px; }
+  .player-options { grid-area: options; min-width: 0; }
+  .player-options .player-volume, .player-options .volume-value { display: none; }
+  .player-button, .player-controls .player-main-button { min-width: 36px; min-height: 36px; }
+  .now-playing { width: 100vw; max-width: 100vw; height: 100svh; max-height: 100svh; border-radius: 0; }
+  .now-playing-content { display: flex; flex-direction: column; gap: 24px; padding: 30px 14px 160px; overflow-y: auto; }
+  .now-playing-art-stage { width: min(78vw, 330px); height: min(78vw, 330px); flex: 0 0 auto; }
+  .now-playing-info { width: 100%; }
+  .equalizer-panel, .graphic-eq-panel { right: 8px !important; left: 8px !important; bottom: 146px !important; width: auto !important; max-height: calc(100svh - 170px); overflow-y: auto; }
+  .queue-list { max-height: 42svh; overflow-y: auto; }
+}
+
 * { box-sizing: border-box; }
 
 /* Quiet, rounded scrollbars that belong to the interface instead of the browser chrome. */
@@ -2228,6 +2266,98 @@ body,
     width: min(1040px, 100%);
     margin: auto;
   }
+}
+
+/* Mobile shell contract: the APK keeps the same features as desktop, but
+   gives navigation, dialogs, tables, and playback their own touch layout. */
+@media (max-width: 650px) {
+  :root { --mobile-gutter: 14px; }
+  html, body { min-width: 320px; overflow-x: hidden; }
+  body { padding-bottom: env(safe-area-inset-bottom); }
+  .app-shell { min-height: 100svh; }
+  .app-shell .sidebar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    width: 100%;
+    max-height: 43svh;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 12px var(--mobile-gutter) 10px;
+    border-radius: 0 0 20px 20px;
+  }
+  .app-shell .brand { margin: 0 0 12px; }
+  .app-shell .brand-copy { min-width: 0; }
+  .app-shell .library-heading { padding-bottom: 7px; }
+  .app-shell .search-box { min-height: 44px; }
+  .app-shell .liked-songs-button,
+  .app-shell .sidebar-tool-button { min-height: 46px; }
+  .app-shell .playlist-list {
+    display: flex;
+    gap: 7px;
+    min-height: 0;
+    max-height: 84px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 4px 1px 7px;
+  }
+  .app-shell .playlist-link { flex: 0 0 168px; }
+  .app-shell .sidebar-footer { display: flex; margin-top: 5px; padding-top: 9px; }
+  .app-shell .sidebar-footer #connection-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .main-area { margin-left: 0 !important; min-height: calc(100svh - 1px); }
+  .topbar { position: sticky; top: 0; z-index: 10; min-height: 52px; padding-inline: var(--mobile-gutter); }
+  .playlist-view, .profile-view { padding: 20px var(--mobile-gutter) calc(148px + env(safe-area-inset-bottom)); }
+  .crumbs { font-size: .62rem; }
+  .api-link { display: none; }
+  .playlist-hero { grid-template-columns: 88px minmax(0, 1fr); gap: 14px; }
+  .hero-cover { width: 88px; height: 88px; }
+  .hero-title { font-size: clamp(1.55rem, 8vw, 2.25rem); overflow-wrap: anywhere; }
+  .hero-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+  .hero-actions .button { min-height: 42px; padding-inline: 8px; }
+  .songs-heading { margin-top: 20px; }
+  .track-row {
+    grid-template-columns: 25px minmax(0, 1fr) 52px;
+    grid-template-areas: "number main duration" "number actions actions";
+    min-height: 86px;
+    gap: 5px 8px;
+    padding: 10px 7px;
+  }
+  .track-number { grid-area: number; align-self: start; padding-top: 5px; }
+  .track-main { grid-area: main; }
+  .track-album { display: none; }
+  .track-duration { grid-area: duration; align-self: start; margin-top: 5px; text-align: right; }
+  .track-actions { grid-area: actions; justify-content: flex-start; gap: 5px; opacity: 1; }
+  .track-actions button { min-width: 34px; min-height: 34px; }
+  .dialog-form, .mood-dialog { width: calc(100vw - 20px); max-height: calc(100svh - 20px); overflow-y: auto; }
+  dialog::backdrop { background: rgba(4, 6, 5, .78); }
+  .dialog-form input, .dialog-form textarea, .dialog-form select, .dialog-form button { font-size: 16px; }
+  .room-card-actions, .dialog-actions, .queue-actions { flex-wrap: wrap; gap: 7px; }
+  .room-card-actions .button, .dialog-actions .button { flex: 1 1 120px; min-height: 42px; }
+  .player-bar {
+    position: fixed;
+    z-index: 40;
+    right: 8px !important;
+    bottom: max(8px, env(safe-area-inset-bottom)) !important;
+    left: 8px !important;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "song options" "controls controls";
+    min-height: 128px;
+    padding: 10px 11px 11px;
+    border-radius: 18px;
+  }
+  .player-song { grid-area: song; min-width: 0; }
+  .player-controls { grid-area: controls; min-width: 0; grid-template-columns: 32px 42px 32px minmax(0, 1fr) 32px; gap: 6px; }
+  .player-options { grid-area: options; min-width: 0; }
+  .player-options .player-volume, .player-options .volume-value { display: none; }
+  .player-button, .player-controls .player-main-button { min-width: 36px; min-height: 36px; }
+  .now-playing { width: 100vw; max-width: 100vw; height: 100svh; max-height: 100svh; border-radius: 0; }
+  .now-playing-content { display: flex; flex-direction: column; gap: 24px; padding: 30px var(--mobile-gutter) 160px; overflow-y: auto; }
+  .now-playing-art-stage { width: min(78vw, 330px); height: min(78vw, 330px); flex: 0 0 auto; }
+  .now-playing-info { width: 100%; }
+  .now-playing-info .now-playing-actions { flex-wrap: wrap; }
+  .equalizer-panel, .graphic-eq-panel { right: 8px !important; left: 8px !important; bottom: 146px !important; width: auto !important; max-height: calc(100svh - 170px); overflow-y: auto; }
+  .queue-list { max-height: 42svh; overflow-y: auto; }
 }
 
 /* Cleaner playlist rows and quieter actions. */
@@ -5750,4 +5880,42 @@ body.is-audio-playing .player-mini-wave i { animation-play-state: running; }
     width: calc(100% + 60px) !important;
     height: calc(100% + 60px) !important;
   }
+}
+
+/* Mobile final overrides: this block intentionally lives at the end. */
+@media (max-width: 650px) {
+  html, body { min-width: 320px; overflow-x: hidden; }
+  .app-shell .sidebar { position: sticky; top: 0; z-index: 30; width: 100%; max-height: 43svh; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 12px 14px 10px; border-radius: 0 0 20px 20px; }
+  .app-shell .playlist-list { display: flex; gap: 7px; min-height: 0; max-height: 84px; overflow-x: auto; overflow-y: hidden; padding: 4px 1px 7px; }
+  .app-shell .playlist-link { flex: 0 0 168px; }
+  .app-shell .sidebar-footer { display: flex; margin-top: 5px; padding-top: 9px; }
+  .main-area { margin-left: 0 !important; min-height: 100svh; }
+  .api-link { display: none; }
+  .playlist-view, .profile-view { padding: 20px 14px calc(148px + env(safe-area-inset-bottom)); }
+  .playlist-hero { grid-template-columns: 88px minmax(0, 1fr); gap: 14px; }
+  .hero-cover { width: 88px; height: 88px; }
+  .hero-title { font-size: clamp(1.55rem, 8vw, 2.25rem); overflow-wrap: anywhere; }
+  .hero-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+  .hero-actions .button { min-height: 42px; padding-inline: 8px; }
+  .track-row { grid-template-columns: 25px minmax(0, 1fr) 52px; grid-template-areas: "number main duration" "number actions actions"; min-height: 86px; gap: 5px 8px; padding: 10px 7px; }
+  .track-number { grid-area: number; align-self: start; padding-top: 5px; }
+  .track-main { grid-area: main; }
+  .track-album { display: none; }
+  .track-duration { grid-area: duration; align-self: start; margin-top: 5px; text-align: right; }
+  .track-actions { grid-area: actions; justify-content: flex-start; gap: 5px; opacity: 1; }
+  .track-actions button { min-width: 34px; min-height: 34px; }
+  .dialog-form, .mood-dialog { width: calc(100vw - 20px); max-height: calc(100svh - 20px); overflow-y: auto; }
+  .dialog-form input, .dialog-form textarea, .dialog-form select, .dialog-form button { font-size: 16px; }
+  .player-bar { position: fixed; z-index: 40; right: 8px !important; bottom: max(8px, env(safe-area-inset-bottom)) !important; left: 8px !important; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "song options" "controls controls"; min-height: 128px; padding: 10px 11px 11px; border-radius: 18px; }
+  .player-song { grid-area: song; min-width: 0; }
+  .player-controls { grid-area: controls; min-width: 0; grid-template-columns: 32px 42px 32px minmax(0, 1fr) 32px; gap: 6px; }
+  .player-options { grid-area: options; min-width: 0; }
+  .player-options .player-volume, .player-options .volume-value { display: none; }
+  .player-button, .player-controls .player-main-button { min-width: 36px; min-height: 36px; }
+  .now-playing { width: 100vw; max-width: 100vw; height: 100svh; max-height: 100svh; border-radius: 0; }
+  .now-playing-content { display: flex; flex-direction: column; gap: 24px; padding: 30px 14px 160px; overflow-y: auto; }
+  .now-playing-art-stage { width: min(78vw, 330px); height: min(78vw, 330px); flex: 0 0 auto; }
+  .now-playing-info { width: 100%; }
+  .equalizer-panel, .graphic-eq-panel { right: 8px !important; left: 8px !important; bottom: 146px !important; width: auto !important; max-height: calc(100svh - 170px); overflow-y: auto; }
+  .queue-list { max-height: 42svh; overflow-y: auto; }
 }

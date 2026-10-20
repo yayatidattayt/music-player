@@ -24,6 +24,7 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Request as APIRequest,
     Response,
     UploadFile,
     status,
@@ -60,7 +61,7 @@ from ..schemas import (
     DirectorSaveRequest,
     DirectorDiscoverRequest,
 )
-from ..storage import delete_object, download_bytes, drive_enabled, ensure_drive_folder, r2_enabled, signed_url, upload_path
+from ..storage import delete_object, download_bytes, drive_enabled, ensure_drive_folder, open_drive_stream, r2_enabled, signed_url, upload_path
 
 
 router = APIRouter(tags=["Playlists and tracks"], dependencies=[Depends(get_current_user)])
@@ -1720,7 +1721,7 @@ def play_track_audio(track_id: int, db: DbSession):
         raise HTTPException(status_code=404, detail="This track has no audio file.")
     if track.audio_path.startswith(("r2://", "gdrive://")):
         if track.audio_path.startswith("gdrive://"):
-            return RedirectResponse(url=f"/api/playlists/media/{track.audio_path.removeprefix('gdrive://')}", status_code=307)
+            return RedirectResponse(url=f"/api/media/{track.audio_path.removeprefix('gdrive://')}", status_code=307)
         url = signed_url(track.audio_path.removeprefix("r2://"))
         if not url:
             raise HTTPException(status_code=503, detail="Remote audio storage is not configured.")
@@ -1732,20 +1733,44 @@ def play_track_audio(track_id: int, db: DbSession):
 
 
 @router.get("/media/{file_id}")
-def stream_drive_media(file_id: str, db: DbSession):
-    """Serve a private Google Drive object through the authenticated API."""
+def stream_drive_media(file_id: str, request: APIRequest, db: DbSession):
+    """Stream bytes as they arrive, preserving Range requests for seeking."""
+    token = _drive_token(db)
+    if not token:
+        raise HTTPException(status_code=409, detail="Reconnect Google Drive to play this song.")
+    byte_range = request.headers.get("range")
+    if byte_range and not re.fullmatch(r"bytes=(?:\d+-\d*|-\d+)", byte_range):
+        raise HTTPException(status_code=416, detail="Unsupported byte range.")
     try:
-        payload, content_type = download_bytes(file_id, token_json=_drive_token(db))
+        upstream, session = open_drive_stream(file_id, token, byte_range)
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Unable to read the cloud media file.") from exc
-    return Response(content=payload, media_type=content_type or "application/octet-stream")
+    headers = {"Cache-Control": "private, no-store", "Accept-Ranges": "bytes"}
+    for name in ("Content-Range", "Content-Length", "Content-Type"):
+        if upstream.headers.get(name):
+            headers[name] = upstream.headers[name]
+    if upstream.status_code not in (200, 206):
+        code = upstream.status_code
+        upstream.close()
+        session.close()
+        if code == 416:
+            return Response(status_code=416, headers={k: v for k, v in headers.items() if k != "Content-Length"})
+        raise HTTPException(status_code=502, detail="Cloud playback failed. Reconnect Google Drive if access expired.")
+
+    def chunks():
+        try:
+            yield from upstream.iter_content(chunk_size=64 * 1024)
+        finally:
+            upstream.close()
+            session.close()
+    return StreamingResponse(chunks(), status_code=upstream.status_code, headers=headers)
 
 
 def redirect_cover_file(cover_path: str | None) -> RedirectResponse:
     if not cover_path:
         raise HTTPException(status_code=404, detail="This item has no cover image.")
     if cover_path.startswith("gdrive://"):
-        return RedirectResponse(url=f"/api/playlists/media/{cover_path.removeprefix('gdrive://')}", status_code=307)
+        return RedirectResponse(url=f"/api/media/{cover_path.removeprefix('gdrive://')}", status_code=307)
     if cover_path.startswith("r2://"):
         url = signed_url(cover_path.removeprefix("r2://"))
         if not url:
@@ -2073,19 +2098,19 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
     playlist = get_playlist_or_404(req.playlist_id, db)
 
     ydl_opts = {
-        'format': 'bestaudio/best',
+        # Preserve the source audio. Android and modern browsers play these
+        # containers directly; unconditional MP3 conversion fails on hosts
+        # without FFmpeg and wastes CPU on the free backend.
+        'format': 'bestaudio',
         'noplaylist': True,
         'socket_timeout': 30,
         'retries': 2,
         'fragment_retries': 2,
         'noprogress': True,
         'outtmpl': str(UPLOAD_DIR / f"{uuid4().hex}.%(ext)s"),
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
         'quiet': True,
+        'js_runtimes': {'node': {}},
+        'max_filesize': 100 * 1024 * 1024,
     }
     bundled_ffmpeg = UPLOAD_DIR.parent.parent / "ffmpeg.exe"
     ffmpeg_location = find_ffmpeg() or (str(bundled_ffmpeg) if bundled_ffmpeg.exists() else None)
@@ -2097,12 +2122,16 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
             info = ydl.extract_info(req.url, download=True)
             title = info.get("title", "Unknown Track")
             filename = ydl.prepare_filename(info)
-            audio_filename = os.path.splitext(os.path.basename(filename))[0] + ".mp3"
+            audio_filename = os.path.basename(filename)
 
         downloaded_path = UPLOAD_DIR / audio_filename
         if not downloaded_path.exists():
             raise HTTPException(status_code=502, detail="The audio download did not produce a file.")
 
+        audio_content_type = {
+            ".m4a": "audio/mp4", ".webm": "audio/webm",
+            ".ogg": "audio/ogg", ".opus": "audio/ogg", ".mp3": "audio/mpeg",
+        }.get(downloaded_path.suffix.lower(), "application/octet-stream")
         metadata = read_audio_metadata(downloaded_path)
         metadata.update(analyze_audio_features(downloaded_path))
         metadata["language"] = info.get("language") or info.get("original_language")
@@ -2137,7 +2166,7 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
             # reliable final fallback for every YouTube import.
             remote_cover = save_remote_cover(youtube_thumbnail(info))
         ensure_unique_track(playlist.id, final_title, final_artist, db)
-        stored_audio_path = store_audio_file(downloaded_path, audio_filename, "audio/mpeg", db, _playlist_drive_folder(playlist, db))
+        stored_audio_path = store_audio_file(downloaded_path, audio_filename, audio_content_type, db, _playlist_drive_folder(playlist, db))
 
         track = Track(
             playlist_id=playlist.id,
@@ -2149,7 +2178,7 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
             position=len(playlist.tracks),
             audio_filename=audio_filename,
             audio_path=stored_audio_path,
-            audio_content_type="audio/mpeg",
+            audio_content_type=audio_content_type,
             cover_filename=remote_cover["filename"] if remote_cover else None,
             cover_path=remote_cover["path"] if remote_cover else None,
             cover_content_type=remote_cover["content_type"] if remote_cover else None,
@@ -2173,6 +2202,8 @@ def download_youtube_audio(req: YouTubeDownloadRequest, db: DbSession) -> Track:
 
 @router.post("/yt-search-import", response_model=TrackRead, status_code=status.HTTP_201_CREATED)
 def search_youtube_audio(req: YouTubeSearchRequest, db: DbSession) -> Track:
+    # Reject inaccessible playlists before doing any external work.
+    get_playlist_or_404(req.playlist_id, db)
     try:
         with yt_dlp.YoutubeDL({
             "quiet": True,

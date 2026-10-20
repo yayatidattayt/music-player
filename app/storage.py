@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -24,12 +25,11 @@ def storage_enabled() -> bool:
     return r2_enabled() or drive_enabled()
 
 
-def _drive_service(token_json: str | None = None):
+def _drive_credentials(token_json: str | None = None):
     token_json = token_json or os.getenv("GOOGLE_DRIVE_TOKEN_JSON", "").strip()
     if not token_json:
         return None
     from google.oauth2.credentials import Credentials
-    from googleapiclient.discovery import build
 
     token_data = __import__("json").loads(token_json)
     # A previously granted Google account may have no refresh_token in its
@@ -45,11 +45,42 @@ def _drive_service(token_json: str | None = None):
         scopes=token_data.get("scopes") or ["https://www.googleapis.com/auth/drive.file"],
         id_token=token_data.get("id_token"),
     )
+    if token_data.get("expiry"):
+        expiry = datetime.fromisoformat(token_data["expiry"].replace("Z", "+00:00"))
+        credentials.expiry = expiry.astimezone(timezone.utc).replace(tzinfo=None) if expiry.tzinfo else expiry
     if credentials.expired and credentials.refresh_token:
         from google.auth.transport.requests import Request
 
         credentials.refresh(Request())
+    return credentials
+
+
+def _drive_service(token_json: str | None = None):
+    from googleapiclient.discovery import build
+    credentials = _drive_credentials(token_json)
+    if credentials is None:
+        return None
     return build("drive", "v3", credentials=credentials, cache_discovery=False)
+
+
+def open_drive_stream(file_id: str, token_json: str, byte_range: str | None = None):
+    from google.auth.transport.requests import AuthorizedSession
+    from urllib.parse import quote
+    credentials = _drive_credentials(token_json)
+    if credentials is None:
+        raise RuntimeError("Google Drive storage is not configured.")
+    session = AuthorizedSession(credentials)
+    try:
+        response = session.get(
+            f"https://www.googleapis.com/drive/v3/files/{quote(file_id, safe='')}",
+            params={"alt": "media"},
+            headers={"Range": byte_range} if byte_range else {},
+            stream=True, timeout=(15, 45),
+        )
+        return response, session
+    except Exception:
+        session.close()
+        raise
 
 
 def ensure_drive_folder(token_json: str, name: str, parent_id: str | None = None) -> str:

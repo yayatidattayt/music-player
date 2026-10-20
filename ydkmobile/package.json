@@ -5,9 +5,9 @@
   "type": "module",
   "description": "YDKMusic mobile Android application",
   "scripts": {
-    "cap:sync": "cap sync",
+    "cap:sync": "node sync-assets.mjs && cap sync",
     "cap:android": "cap open android",
-    "cap:copy": "cap copy"
+    "cap:copy": "node sync-assets.mjs && cap copy"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.0.0",

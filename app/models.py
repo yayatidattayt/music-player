@@ -38,6 +38,31 @@ class AuthSession(Base):
     user: Mapped[User] = relationship(back_populates="sessions")
 
 
+class MobileLoginCode(Base):
+    __tablename__ = "mobile_login_codes"
+
+    code_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    challenge: Mapped[str] = mapped_column(String(43), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ImportJob(Base):
+    __tablename__ = "import_jobs"
+    __table_args__ = (UniqueConstraint("user_id", "request_id"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    playlist_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    query: Mapped[str] = mapped_column(String(500), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="queued", nullable=False)
+    message: Mapped[str] = mapped_column(String(500), default="Waiting to import", nullable=False)
+    track_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class GoogleDriveConnection(Base):
     __tablename__ = "google_drive_connections"
 

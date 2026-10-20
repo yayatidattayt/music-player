@@ -12,6 +12,11 @@ const localStorage = {
   removeItem: (key) => window.localStorage.removeItem(`sideb-account:${storageScope}:${key}`),
 };
 
+function storedJSON(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key) || "null") ?? fallback; }
+  catch { localStorage.removeItem(key); return fallback; }
+}
+
 const state = {
   playlists: [],
   likedTracks: [],
@@ -27,7 +32,7 @@ const state = {
   editingTrackId: null,
   detailRequest: 0,
   toastTimer: null,
-  queue: JSON.parse(localStorage.getItem("ydkmusic-queue") || "[]"),
+  queue: storedJSON("ydkmusic-queue", []),
   draggingQueueIndex: null,
   homePlaylists: [],
   stats: null,
@@ -120,6 +125,9 @@ async function handoffPlaybackToAndroid() {
       album: playerTrack.album || state.activePlaylist?.name || "YDKMusic",
       artworkUrl: playerTrack.cover_url || state.activePlaylist?.cover_url || "",
       positionMs: Math.round((audioEngine.currentTime || 0) * 1000),
+      volume: audioEngine.muted ? 0 : audioEngine.volume,
+      repeatMode: state.repeat ? 1 : 0,
+      shuffle: state.shuffle,
       queue,
       queueIndex: Math.max(0, queue.findIndex((track) => String(track.id) === String(playerTrack.id))),
     });
@@ -381,7 +389,7 @@ function startAuthenticatedApp(user) {
   state.authStarted = true;
   state.currentUser = user;
   storageScope = `user-${user.id}`;
-  state.queue = JSON.parse(localStorage.getItem("ydkmusic-queue") || "[]");
+  state.queue = storedJSON("ydkmusic-queue", []);
   state.lyricRefresh = Number(localStorage.getItem("ydkmusic-lyric-refresh") || 0);
   savedSidebarState = localStorage.getItem("ydkmusic-sidebar-collapsed") === "true";
   const storedAccountVolume = localStorage.getItem("sideb-volume");
@@ -390,7 +398,7 @@ function startAuthenticatedApp(user) {
   if (!previewContinuesIntoHome) audioEngine.volume = preferredVolume;
   byId("player-volume").value = preferredVolume;
   byId("auth-volume").value = preferredVolume;
-  setSidebarCollapsed(savedSidebarState);
+  setSidebarCollapsed(isMobileShell ? true : savedSidebarState);
   renderQueue();
   state.currentView = "home";
   document.body.classList.remove("auth-mode");
@@ -398,6 +406,7 @@ function startAuthenticatedApp(user) {
   byId("app-shell").hidden = false;
   if (user?.display_name) byId("connection-label").textContent = `Welcome, ${user.display_name}`;
   const homeLoad = loadPlaylists(null);
+  window.dispatchEvent(new Event("ydkmusic:authenticated"));
   if (previewContinuesIntoHome) {
     void homeLoad.then(() => {
       if (!byId("app-shell").hidden) {
@@ -427,7 +436,7 @@ async function initializeAuth() {
     document.body.classList.add("auth-mode");
     await playTrack(HOME_FEATURE_TRACK, { fadeIn: true, authAutoplay: true });
   } catch {
-    setAuthStatus("The server is unavailable. Start the app and try again.", "is-error");
+    setAuthStatus("Your library is waking up or offline. Check your connection and try signing in again.", "is-error");
   }
 }
 
@@ -453,6 +462,7 @@ async function submitAuth(mode, event) {
   try {
     const response = await fetch(apiUrl(`/api/auth/${signup ? "signup" : "login"}`), {
       method: "POST",
+      credentials: configuredApiBase ? "include" : "same-origin",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
@@ -543,7 +553,7 @@ function renderProfile() {
     </section>
     <button id="profile-back" class="profile-back" type="button">← Back to your library</button>`;
   byId("profile-logout").addEventListener("click", logout);
-  byId("google-drive-connect")?.addEventListener("click", () => { window.location.href = `${apiUrl("/api/auth/google-drive/connect")}`; });
+  byId("google-drive-connect")?.addEventListener("click", () => startGoogleSignIn());
   fetch(apiUrl("/api/auth/google-drive/status"), { credentials: configuredApiBase ? "include" : "same-origin" }).then((response) => response.json()).then((drive) => {
     const status = byId("google-drive-status");
     const button = byId("google-drive-connect");
@@ -573,9 +583,13 @@ async function openProfile() {
 }
 
 async function logout() {
-  if (playerTrack?.id > 0) await flushListeningTime(playerTrack.id);
-  await fetch(apiUrl("/api/auth/logout"), { method: "POST", credentials: configuredApiBase ? "include" : "same-origin" });
-  window.location.reload();
+  try {
+    if (playerTrack?.id > 0) await flushListeningTime(playerTrack.id);
+    await api("/api/auth/logout", { method: "POST" });
+    audioEngine.pause();
+    if (nativePlaybackAvailable()) await nativePlayback.stop();
+    window.location.reload();
+  } catch (error) { showToast(error.message || "Could not log out. Please try again.", true); }
 }
 
 const roomState = {
@@ -690,7 +704,7 @@ function clearRoomSession() {
   roomState.members = [];
   roomState.queue = [];
   roomState.pendingRequests = [];
-  state.queue = roomState.previousQueue || JSON.parse(localStorage.getItem("ydkmusic-queue") || "[]");
+  state.queue = roomState.previousQueue || storedJSON("ydkmusic-queue", []);
   roomState.previousQueue = null;
   localStorage.setItem("ydkmusic-queue", JSON.stringify(state.queue));
   renderQueue();
@@ -844,7 +858,7 @@ function handleRoomMessage(message) {
 async function connectRoomSocket() {
   if (!roomState.roomId || !roomState.memberId || !roomState.token) return;
   try {
-    const roomCheck = await fetch(`/api/rooms/${encodeURIComponent(roomState.roomId)}`);
+    const roomCheck = await fetch(apiUrl(`/api/rooms/${encodeURIComponent(roomState.roomId)}`), { credentials: "include" });
     if (roomCheck.status === 404) {
       clearRoomSession();
       setRoomStatus("This room has expired.", "is-error");
@@ -856,7 +870,10 @@ async function connectRoomSocket() {
   if (roomState.socket) roomState.socket.close();
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const params = new URLSearchParams({ member_id: roomState.memberId, token: roomState.token });
-  const socket = new WebSocket(`${protocol}//${window.location.host}/api/rooms/${encodeURIComponent(roomState.roomId)}/ws?${params}`);
+  const roomUrl = new URL(apiUrl(`/api/rooms/${encodeURIComponent(roomState.roomId)}/ws`), window.location.href);
+  roomUrl.protocol = roomUrl.protocol === "https:" ? "wss:" : "ws:";
+  roomUrl.search = params.toString();
+  const socket = new WebSocket(roomUrl.href);
   roomState.socket = socket;
   setRoomStatus("Connecting…", "is-reconnecting");
   socket.addEventListener("open", () => {
@@ -1713,7 +1730,16 @@ async function api(path, options = {}) {
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await fetch(apiUrl(path), { ...options, credentials: configuredApiBase ? "include" : "same-origin", headers });
+  let response;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 60000);
+  try {
+    response = await fetch(apiUrl(path), { ...options, signal: options.signal || controller.signal, credentials: configuredApiBase ? "include" : "same-origin", headers });
+  } catch (error) {
+    throw new Error(error.name === "AbortError"
+      ? "The server is taking too long. Check your library before retrying."
+      : "Cannot reach your library. Check your connection and try again.");
+  } finally { clearTimeout(timeout); }
   if (response.status === 204) return null;
 
   const raw = await response.text();
@@ -1725,7 +1751,18 @@ async function api(path, options = {}) {
     const message = Array.isArray(detail)
       ? detail.map((item) => item.msg).join(" ")
       : (detail || `Request failed (${response.status})`);
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    if (response.status === 401 && state.authStarted) {
+      state.authStarted = false;
+      audioEngine.pause();
+      document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
+      document.body.classList.add("auth-mode");
+      byId("auth-gate").hidden = false;
+      byId("app-shell").hidden = true;
+      setAuthStatus("Your session expired. Please sign in again.", "is-error");
+    }
+    throw error;
   }
   return normalizeMobileUrls(data);
 }
@@ -1817,65 +1854,11 @@ function updatePageArtworkTheme() {
 }
 
 async function importYouTubeTrack() {
-  const input = byId("ytUrlInput");
-  const button = byId("importYtBtn");
-  const url = input.value.trim();
-
-  if (!state.activeId) {
-    showToast("Open a playlist before importing a track.", true);
-    return;
-  }
-  if (!url) {
-    showToast("Paste a YouTube link first.", true);
-    input.focus();
-    return;
-  }
-
-  button.disabled = true;
-  button.querySelector("span").textContent = "Fetching…";
-  try {
-    const looksLikeUrl = /^https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\//i.test(url);
-    await api(looksLikeUrl ? "/api/yt-download" : "/api/yt-search-import", {
-      method: "POST",
-      body: JSON.stringify(looksLikeUrl
-        ? { url, playlist_id: state.activeId }
-        : { query: url, playlist_id: state.activeId }),
-    });
-    input.value = "";
-    byId("yt-import-status").textContent = "Added ✓";
-    showToast("Track imported to this playlist.");
-    await loadPlaylists(state.activeId);
-  } catch (error) {
-    showToast(error.message || "Could not import that track.", true);
-  } finally {
-    button.disabled = false;
-    button.querySelector("span").textContent = "Import Track";
-  }
+  return queueYoutubeImport();
 }
 
 async function searchAndImportYouTubeTrack() {
-  const input = byId("ytUrlInput");
-  const button = byId("searchYtBtn");
-  const query = input.value.trim();
-  if (!state.activeId) return showToast("Open a playlist before importing a track.", true);
-  if (!query) return showToast("Type a song title and artist first.", true);
-  button.disabled = true;
-  byId("yt-import-status").textContent = "Searching…";
-  try {
-    await api("/api/yt-search-import", {
-      method: "POST",
-      body: JSON.stringify({ query, playlist_id: state.activeId }),
-    });
-    input.value = "";
-    byId("yt-import-status").textContent = "Added ✓";
-    showToast("Song found and added to this playlist.");
-    await loadPlaylists(state.activeId);
-  } catch (error) {
-    byId("yt-import-status").textContent = "Could not add";
-    showToast(error.message || "Could not find that song.", true);
-  } finally {
-    button.disabled = false;
-  }
+  return queueYoutubeImport();
 }
 
 function setConnection(online) {
@@ -2009,7 +1992,7 @@ async function analyzeAudioLyricsOffset(track = playerTrack) {
   }
 
   try {
-    const response = await fetch(track.audio_url);
+    const response = await fetch(track.audio_url, { credentials: new URL(track.audio_url, window.location.href).origin === new URL(configuredApiBase || window.location.origin).origin ? "include" : "omit" });
     if (!response.ok) throw new Error("Audio could not be analyzed.");
     const buffer = await response.arrayBuffer();
     const Context = window.OfflineAudioContext || window.webkitOfflineAudioContext;
@@ -2353,8 +2336,9 @@ async function playTrack(track, options = {}) {
   updateLyricsTimingDisplay();
   updateMediaSession();
   updateArtTheme(track.cover_url || state.activePlaylist?.cover_url);
+  const firstPartyAudio = new URL(track.audio_url, window.location.href).origin === new URL(configuredApiBase || window.location.origin).origin;
+  audioEngine.crossOrigin = track.id !== HOME_FEATURE_TRACK.id && firstPartyAudio ? "use-credentials" : "anonymous";
   audioEngine.src = track.audio_url;
-  audioEngine.crossOrigin = track.id === HOME_FEATURE_TRACK.id ? "anonymous" : "";
   state.listenProgress = 0;
   state.lastPlaybackTime = null;
   state.countedListenTrackId = null;
@@ -2383,8 +2367,10 @@ async function playTrack(track, options = {}) {
           authPreviewWaitingForGesture = true;
           setAuthStatus("Preview ready — tap once anywhere to turn sound on.");
         }
-      } else if (options.fadeIn) {
-        fadeInAuthPreview();
+      } else {
+        audioEngine.muted = false;
+        await audioEngine.play();
+        if (options.fadeIn) fadeInAuthPreview();
       }
     } catch {
       if (options.authAutoplay) {
@@ -2672,17 +2658,16 @@ function renderHome() {
 async function loadHome() {
   setProfileOpen(false);
   state.currentView = "home";
+  const requestId = ++state.detailRequest;
   resetViewScroll();
   try {
-    state.homePlaylists = await Promise.all(state.playlists.map((playlist) => api(`/api/playlists/${playlist.id}`)));
-    state.stats = await api("/api/listening/stats");
-    const missingMetadataTracks = state.homePlaylists
-      .flatMap((playlist) => playlist.tracks || [])
-      .filter((track) => !track.genre || !track.album || !track.cover_url);
-    if (missingMetadataTracks.length) {
-      await Promise.all(missingMetadataTracks.map((track) => api(`/api/tracks/${track.id}/catalog-metadata`, { method: "POST" }).catch(() => null)));
-      state.homePlaylists = await Promise.all(state.playlists.map((playlist) => api(`/api/playlists/${playlist.id}`)));
-    }
+    const [playlists, stats] = await Promise.all([
+      Promise.all(state.playlists.map((playlist) => api(`/api/playlists/${playlist.id}`))),
+      api("/api/listening/stats").catch(() => null),
+    ]);
+    if (requestId !== state.detailRequest || state.currentView !== "home") return;
+    state.homePlaylists = playlists;
+    state.stats = stats;
     renderHome();
     resetViewScroll();
   } catch (error) {
@@ -3593,7 +3578,7 @@ function applyEqualizer(values) {
 }
 
 function restoreEqualizer() {
-  const saved = JSON.parse(localStorage.getItem(EQ_STORAGE_KEY) || "null");
+  const saved = storedJSON(EQ_STORAGE_KEY, null);
   const values = Array.isArray(saved) && saved.length === EQ_FREQUENCIES.length
     ? saved
     : EQ_PRESETS.flat;
@@ -3836,7 +3821,7 @@ function applyGraphicEqualizer(values, selectedIndex = -1) {
 }
 
 function restoreGraphicEqualizer() {
-  const saved = JSON.parse(localStorage.getItem(GRAPHIC_EQ_STORAGE_KEY) || "null");
+  const saved = storedJSON(GRAPHIC_EQ_STORAGE_KEY, null);
   graphicEqSettings = Array.isArray(saved) && saved.length === GRAPHIC_EQ_FREQUENCIES.length
     ? saved.map((band, index) => normalizeGraphicEqBand(typeof band === "object" ? band : { gain: Number(band) || 0 }, index))
     : GRAPHIC_EQ_DEFAULTS.map((band) => ({ ...band }));
@@ -4427,9 +4412,23 @@ byId("sidebar-toggle").addEventListener("click", () => {
 byId("sidebar-reopen").addEventListener("click", () => setSidebarCollapsed(false));
 byId("auth-login-tab").addEventListener("click", () => setAuthMode("login"));
 byId("auth-signup-tab").addEventListener("click", () => setAuthMode("signup"));
-byId("google-signin-button")?.addEventListener("click", () => {
-  window.location.href = apiUrl("/api/auth/google/sign-in");
+async function startGoogleSignIn() {
+  const nativeAuth = window.Capacitor?.Plugins?.NativeAuth;
+  if (isMobileShell && window.Capacitor?.isNativePlatform?.()) {
+    if (!nativeAuth) return setAuthStatus("Update the Android app to use Google sign-in.", "is-error");
+    try {
+      setAuthStatus("Google sign-in opens securely in your browser. YDKMusic will reopen when you finish.");
+      await nativeAuth.signIn();
+    } catch (error) { setAuthStatus(error.message || "Could not start Google sign-in.", "is-error"); }
+  } else {
+    window.location.href = apiUrl("/api/auth/google/sign-in");
+  }
+}
+window.Capacitor?.Plugins?.NativeAuth?.addListener("loginComplete", async (result) => {
+  if (result.success) { window.location.reload(); }
+  else setAuthStatus(result.message, "is-error");
 });
+byId("google-signin-button")?.addEventListener("click", startGoogleSignIn);
 byId("auth-login-form").addEventListener("submit", (event) => submitAuth("login", event));
 byId("auth-signup-form").addEventListener("submit", (event) => submitAuth("signup", event));
 byId("logout-button").addEventListener("click", logout);
@@ -4456,7 +4455,7 @@ byId("searchYtBtn").addEventListener("click", searchAndImportYouTubeTrack);
 byId("ytUrlInput").addEventListener("keydown", (event) => {
   if (event.key === "Enter") importYouTubeTrack();
 });
-setSidebarCollapsed(savedSidebarState);
+setSidebarCollapsed(isMobileShell ? true : savedSidebarState);
 initializeAuth();
 
 

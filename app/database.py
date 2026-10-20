@@ -61,10 +61,10 @@ def migrate_schema() -> None:
             # Kept nullable on legacy rows until setup_admin.py safely assigns
             # the existing library to the selected administrator.
             "owner_id": "INTEGER REFERENCES users(id)",
+            "drive_folder_id": "VARCHAR(255)",
         },
         "users": {"is_admin": "BOOLEAN NOT NULL DEFAULT FALSE"},
         "google_drive_connections": {"drive_folder_id": "VARCHAR(255)"},
-        "playlists": {"drive_folder_id": "VARCHAR(255)"},
         "listening_events": {
             "user_id": "INTEGER REFERENCES users(id)",
         },
