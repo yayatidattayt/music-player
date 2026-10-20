@@ -4556,11 +4556,14 @@ byId("auth-login-tab").addEventListener("click", () => setAuthMode("login"));
 byId("auth-signup-tab").addEventListener("click", () => setAuthMode("signup"));
 async function startGoogleSignIn() {
   const nativeAuth = window.Capacitor?.Plugins?.NativeAuth;
-  if (isMobileShell && window.Capacitor?.isNativePlatform?.()) {
-    if (!nativeAuth) return setAuthStatus("Update the Android app to use Google sign-in.", "is-error");
+  if (isMobileShell) {
+    if (typeof nativeAuth?.signIn !== "function") {
+      return setAuthStatus("Google sign-in is unavailable in this app build. Update YDKMusic and try again.", "is-error");
+    }
     try {
       setAuthStatus("Google sign-in opens securely in your browser. YDKMusic will reopen when you finish.");
       await nativeAuth.signIn();
+      setAuthStatus("Browser opened. Finish Google sign-in there, then return to YDKMusic.");
     } catch (error) { setAuthStatus(error.message || "Could not start Google sign-in.", "is-error"); }
   } else {
     window.location.href = apiUrl("/api/auth/google/sign-in");

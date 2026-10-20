@@ -4,6 +4,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.Uri;
 import android.util.Base64;
+import android.util.Log;
 import android.webkit.CookieManager;
 
 import com.getcapacitor.JSObject;
@@ -26,6 +27,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** System-browser OAuth with a verifier-bound, one-time return to this app. */
 @CapacitorPlugin(name = "NativeAuth")
 public final class NativeAuthPlugin extends Plugin {
+    private static final String TAG = "YDKNativeAuth";
     private static final String API = "https://ydkmusic.onrender.com";
     private final AtomicBoolean exchanging = new AtomicBoolean(false);
 
@@ -59,10 +61,17 @@ public final class NativeAuthPlugin extends Plugin {
                     .putLong("started", System.currentTimeMillis()).commit();
             Uri uri = Uri.parse(API + "/api/auth/google/sign-in").buildUpon()
                     .appendQueryParameter("mobile_challenge", challenge).build();
-            getActivity().startActivity(new Intent(Intent.ACTION_VIEW, uri));
+            Intent browserIntent = new Intent(Intent.ACTION_VIEW, uri);
+            if (browserIntent.resolveActivity(getContext().getPackageManager()) == null) {
+                throw new IllegalStateException("No browser is available to open Google sign-in.");
+            }
+            getActivity().startActivity(browserIntent);
             call.resolve();
         } catch (Exception error) {
-            call.reject("Could not open Google sign-in. Check that a browser is installed.");
+            Log.e(TAG, "Could not launch the Google sign-in browser", error);
+            call.reject(error.getMessage() == null
+                    ? "Could not open Google sign-in. Check that a browser is installed."
+                    : error.getMessage());
         }
     }
 
